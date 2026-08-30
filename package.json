@@ -1,0 +1,17 @@
+{
+  "name": "slack_bot",
+  "version": "1.0.0",
+  "description": "Slack bot that resolves shipment label data from Airtable and triggers the RPi print server.",
+  "main": "slack_bot.js",
+  "scripts": {
+    "start": "node slack_bot.js",
+    "fetch-remaining-labels": "node fetch_remaining_labels.js"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@slack/bolt": "^5.0.0",
+    "airtable": "^0.12.2",
+    "dotenv": "^17.4.2"
+  }
+}

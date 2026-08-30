@@ -1,0 +1,14 @@
+[Unit]
+Description=Slack print bot (Socket Mode)
+After=network-online.target rpi-job-scheduler.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/pi/slack_bot
+ExecStart=/usr/bin/node slack_bot.js
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
