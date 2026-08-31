@@ -17,6 +17,17 @@ const INTENT_RULES = [
             ['label', 'labels', 'shipment', 'shipments'],
         ],
     },
+    /* Also listed before 'help' for the same reason -- "can you help check
+        the status of the august 21 shipment" should resolve to this, not
+        help. Doesn't require 'print' (or an authorized user) since it's
+        read-only. */
+    {
+        intent: 'query_shipment_status',
+        groups: [
+            ['status', 'check', 'query', 'lookup', 'find'],
+            ['shipment', 'shipments'],
+        ],
+    },
     {
         intent: 'help',
         groups: [['help', 'commands', 'usage']],

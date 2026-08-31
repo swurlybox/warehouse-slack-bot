@@ -12,14 +12,16 @@ if (!AIRTABLE_API_KEY) {
 
 const base = new Airtable({ apiKey: AIRTABLE_API_KEY }).base(AIRTABLE_BASE_ID);
 
-/* Queries the current in-progress shipment table for rows still needing labels
-    printed and maps them into the { shipment, items: [{ sku, quantity }] }
-    payload shape the print endpoint expects. `quantity` comes straight from
-    the Labels formula field (ASINS/Case x Cases) -- already computed. */
-async function fetchRemainingLabels() {
+/* Queries the given shipment table for rows still needing labels printed and
+    maps them into the { shipment, items: [{ sku, quantity }] } payload shape
+    the print endpoint expects. `quantity` comes straight from the Labels
+    formula field (ASINS/Case x Cases) -- already computed. Every shipment
+    table (past or "Next Shipment") shares this same SKU/Labels/Label Printed
+    layout, so one function serves all of them. */
+async function fetchRemainingLabelsForTable(tableName) {
     const items = [];
 
-    await base(SHIPMENT_TABLE)
+    await base(tableName)
         .select({
             filterByFormula: 'NOT({Label Printed})',
             fields: ['SKU', 'Labels'],
@@ -39,7 +41,11 @@ async function fetchRemainingLabels() {
             fetchNextPage();
         });
 
-    return { shipment: SHIPMENT_TABLE, items };
+    return { shipment: tableName, items };
+}
+
+function fetchRemainingLabels() {
+    return fetchRemainingLabelsForTable(SHIPMENT_TABLE);
 }
 
 /* Only run as a CLI script when invoked directly (`node fetch_remaining_labels.js`
@@ -56,4 +62,4 @@ if (require.main === module) {
         });
 }
 
-module.exports = { fetchRemainingLabels };
+module.exports = { fetchRemainingLabels, fetchRemainingLabelsForTable };

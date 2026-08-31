@@ -1,8 +1,9 @@
 require('dotenv').config();
 const { App } = require('@slack/bolt');
-const { fetchRemainingLabels } = require('./fetch_remaining_labels');
+const { fetchRemainingLabels, fetchRemainingLabelsForTable } = require('./fetch_remaining_labels');
 const { parseIntent, extractShipmentId } = require('./intent_parser');
 const { submitPrintJob } = require('./print_service');
+const { findShipmentTable } = require('./shipment_lookup');
 
 const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN;
 const SLACK_APP_TOKEN = process.env.SLACK_APP_TOKEN;
@@ -17,6 +18,7 @@ const EXAMPLE_USAGE = 'Try something like: "print remaining labels for the curre
 const HELP_TEXT = [
     "Here's what I can do:",
     '• *print remaining labels [for the current shipment]* -- finds unprinted labels for the current shipment and sends them to the printer.',
+    '• *check status of the [shipment name] shipment* -- looks up a shipment by name (e.g. "august 21") and lists its remaining unprinted labels.',
     '• *help* -- shows this message.',
 ].join('\n');
 
@@ -72,6 +74,49 @@ async function handlePrintRemainingLabels(say, userId) {
     }
 }
 
+/* Looks up a shipment by name (fuzzy-matched against Airtable table names,
+    e.g. "august 21" -> "August 21 Shipment") and reports its remaining
+    unprinted labels. Read-only -- no print job is triggered -- so unlike
+    handlePrintRemainingLabels this isn't gated by isAuthorized. */
+async function handleQueryShipmentStatus(text, say, userId) {
+    let result;
+    try {
+        result = await findShipmentTable(text);
+    } catch (error) {
+        console.error('Failed to look up shipment tables:', error.message);
+        await say(`<@${userId}> Sorry, I couldn't look up shipment tables: ${error.message}`);
+        return;
+    }
+
+    if (result.status === 'not_found') {
+        await say(`<@${userId}> I couldn't tell which shipment you meant. Try naming it, e.g. "check status of the august 21 shipment".`);
+        return;
+    }
+
+    if (result.status === 'ambiguous') {
+        const names = result.matches.map((table) => `"${table.name}"`).join(', ');
+        await say(`<@${userId}> That matches more than one shipment: ${names}. Can you be more specific?`);
+        return;
+    }
+
+    let payload;
+    try {
+        payload = await fetchRemainingLabelsForTable(result.table.name);
+    } catch (error) {
+        console.error('Failed to fetch shipment data:', error.message);
+        await say(`<@${userId}> Sorry, I couldn't read "${result.table.name}": ${error.message}`);
+        return;
+    }
+
+    if (payload.items.length === 0) {
+        await say(`<@${userId}> "${payload.shipment}" has no remaining labels to print -- everything's already printed.`);
+        return;
+    }
+
+    const lines = payload.items.map((item) => `• ${item.sku} — ${item.quantity}`).join('\n');
+    await say(`<@${userId}> "${payload.shipment}" has ${payload.items.length} SKU(s) still needing labels:\n${lines}`);
+}
+
 /* Socket Mode opens an outbound WebSocket from here to Slack instead of
     listening for inbound HTTP -- no public endpoint needed, which fits the
     Tailscale-only RPi setup. */
@@ -97,6 +142,11 @@ async function routeMessage(text, userId, say) {
         return;
     }
 
+    if (intent === 'query_shipment_status') {
+        await handleQueryShipmentStatus(text, say, userId);
+        return;
+    }
+
     if (intent === 'help') {
         await say(`<@${userId}> ${HELP_TEXT}`);
         return;
@@ -109,10 +159,17 @@ app.event('app_mention', async ({ event, say }) => {
     await routeMessage(event.text, event.user, say);
 });
 
-app.message(async ({ message, say }) => {
+app.message(async ({ message, say, context }) => {
     /* Skip subtype'd messages (edits, deletes, bot messages, joins, etc.) --
         only respond to plain user-typed messages. */
     if (message.subtype) return;
+
+    /* Slack fires both 'message' and 'app_mention' for a message that
+        @-mentions the bot in a channel -- without this check it would be
+        routed (and, for print jobs, submitted to the print server) twice. */
+    if (context.botUserId && message.text?.includes(`<@${context.botUserId}>`)) {
+        return;
+    }
 
     await routeMessage(message.text, message.user, say);
 });
