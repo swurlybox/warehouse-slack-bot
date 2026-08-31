@@ -62,4 +62,4 @@ if (require.main === module) {
         });
 }
 
-module.exports = { fetchRemainingLabels, fetchRemainingLabelsForTable };
+module.exports = { fetchRemainingLabels, fetchRemainingLabelsForTable, DEFAULT_SHIPMENT_TABLE: SHIPMENT_TABLE };
