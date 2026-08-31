@@ -5,10 +5,24 @@
     INTENT_RULES; the first rule whose every group has at least one match
     wins. */
 const INTENT_RULES = [
+    /* Must come before 'print_remaining_labels' -- "test print remaining
+        labels" satisfies that rule's groups too ('print' + a remaining-word
+        + a label/shipment word are all present), so the more specific
+        test/dry rule needs first look or it would never fire. */
+    {
+        intent: 'test_print_remaining_labels',
+        groups: [
+            ['test', 'dry'],
+            ['print'],
+            ['remaining', 'left', 'outstanding', 'unprinted'],
+            ['label', 'labels', 'shipment', 'shipments'],
+        ],
+    },
     /* Listed before 'help' on purpose -- it requires every one of three
         groups to match, so it's the more specific rule and should get first
         look at a message that happens to contain "help" too (e.g. "can you
-        help print the remaining labels"). */
+        help print the remaining labels"). This is the REAL print -- it
+        actually sends labels to the physical printer. */
     {
         intent: 'print_remaining_labels',
         groups: [

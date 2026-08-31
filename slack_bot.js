@@ -2,7 +2,7 @@ require('dotenv').config();
 const { App } = require('@slack/bolt');
 const { fetchRemainingLabelsForTable, DEFAULT_SHIPMENT_TABLE } = require('./fetch_remaining_labels');
 const { parseIntent, extractShipmentId } = require('./intent_parser');
-const { submitPrintJob } = require('./print_service');
+const { submitPrintJob, submitTestPrintJob } = require('./print_service');
 const { findShipmentTable, isAllShipmentsQuery, fetchRemainingLabelsForAllShipments } = require('./shipment_lookup');
 
 const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN;
@@ -17,7 +17,8 @@ const EXAMPLE_USAGE = 'Try something like: "print remaining labels for the curre
 
 const HELP_TEXT = [
     "Here's what I can do:",
-    '• *print remaining labels [for the [shipment name] shipment]* -- finds unprinted labels for the named shipment (e.g. "august 21"), or the current shipment if none is named, and sends them to the printer.',
+    '• *print remaining labels [for the [shipment name] shipment]* -- finds unprinted labels for the named shipment (e.g. "august 21"), or the current shipment if none is named, and sends them to the PHYSICAL PRINTER. Asks for confirmation first since this can\'t be undone.',
+    '• *test print remaining labels [for the [shipment name] shipment]* -- same lookup, but downloads the label PDFs instead of printing them for real. No confirmation needed.',
     '• *check status of the [shipment name] shipment* -- looks up a shipment by name (e.g. "august 21") and lists its remaining unprinted labels.',
     '• *check status of all shipments* -- reports remaining-label counts across every shipment (print does not support "all" -- name one shipment to print).',
     '• *help* -- shows this message.',
@@ -62,18 +63,15 @@ async function resolveShipmentTableName(text) {
     return result;
 }
 
-/* Fetches the named (or, if none was given, current) shipment's
-    unprinted-label rows from Airtable and sends them to the RPi print
-    server. The Slack reply only reports success/failure and the SKU count
-    -- not the print server's own response body, which is that automation's
-    internal output and free to change shape independently of this bot. */
-async function handlePrintRemainingLabels(text, say, userId) {
-    /* Deliberately no bulk option here, unlike the status query -- printing
-        every shipment's labels in one shot is a much higher-consequence
-        mistake (real labels on a real printer) than a long status message. */
+/* Resolves the shipment a print/test-print command names (or defaults to)
+    and fetches its remaining-label rows, folding every failure mode -- an
+    unsupported "all shipments" request, an Airtable lookup error, an
+    unresolved/ambiguous name, or a fetch error -- into one result shape so
+    both print handlers below can share the same error reporting instead of
+    duplicating it. */
+async function resolveShipmentAndFetchRemaining(text) {
     if (isAllShipmentsQuery(text)) {
-        await say(`<@${userId}> Printing for all shipments at once isn't supported -- please name one shipment, e.g. "print remaining labels for the august 21 shipment".`);
-        return;
+        return { status: 'all_not_supported' };
     }
 
     const resolved = await resolveShipmentTableName(text).catch((error) => {
@@ -81,44 +79,164 @@ async function handlePrintRemainingLabels(text, say, userId) {
         return { status: 'error', message: error.message };
     });
 
-    if (resolved.status === 'error') {
-        await say(`<@${userId}> Sorry, I couldn't look up shipment tables: ${resolved.message}`);
-        return;
-    }
-    if (resolved.status === 'not_found') {
-        await say(`<@${userId}> I couldn't tell which shipment you meant. Try naming it, e.g. "print remaining labels for the august 21 shipment".`);
-        return;
-    }
-    if (resolved.status === 'ambiguous') {
-        const names = resolved.matches.map((table) => `"${table.name}"`).join(', ');
-        await say(`<@${userId}> That matches more than one shipment: ${names}. Can you be more specific?`);
-        return;
+    if (resolved.status !== 'ok') {
+        return resolved;
     }
 
-    let payload;
     try {
-        payload = await fetchRemainingLabelsForTable(resolved.tableName);
+        const payload = await fetchRemainingLabelsForTable(resolved.tableName);
+        return { status: 'ok', shipment: payload.shipment, items: payload.items };
     } catch (error) {
         console.error('Failed to fetch remaining labels:', error.message);
-        await say(`<@${userId}> Sorry, I couldn't reach Airtable: ${error.message}`);
+        return { status: 'error', message: error.message };
+    }
+}
+
+/* Reports a non-'ok' resolveShipmentAndFetchRemaining result to the user.
+    Returns true if it did (caller should stop), false if the result was
+    'ok' (caller should proceed). exampleCommand lets the print and
+    test-print handlers each point at their own correct example phrasing. */
+async function sayShipmentResolutionError(result, say, userId, exampleCommand) {
+    if (result.status === 'all_not_supported') {
+        await say(`<@${userId}> Printing for all shipments at once isn't supported -- please name one shipment, e.g. "${exampleCommand}".`);
+        return true;
+    }
+    if (result.status === 'error') {
+        await say(`<@${userId}> Sorry, I couldn't look up shipment tables: ${result.message}`);
+        return true;
+    }
+    if (result.status === 'not_found') {
+        await say(`<@${userId}> I couldn't tell which shipment you meant. Try naming it, e.g. "${exampleCommand}".`);
+        return true;
+    }
+    if (result.status === 'ambiguous') {
+        const names = result.matches.map((table) => `"${table.name}"`).join(', ');
+        await say(`<@${userId}> That matches more than one shipment: ${names}. Can you be more specific?`);
+        return true;
+    }
+    return false;
+}
+
+/* Downloads label PDFs for the named (or default) shipment without ever
+    sending them to a physical printer -- safe to run without confirmation,
+    unlike handlePrintRemainingLabels below. */
+async function handleTestPrintRemainingLabels(text, say, userId) {
+    const result = await resolveShipmentAndFetchRemaining(text);
+    if (await sayShipmentResolutionError(result, say, userId, 'test print remaining labels for the august 21 shipment')) {
         return;
     }
 
-    if (payload.items.length === 0) {
-        await say(`<@${userId}> No remaining labels to print for "${payload.shipment}" -- everything's already printed.`);
+    if (result.items.length === 0) {
+        await say(`<@${userId}> No remaining labels to test-print for "${result.shipment}" -- everything's already printed.`);
         return;
     }
 
-    const lines = payload.items.map((item) => `• ${item.sku} — ${item.quantity}`).join('\n');
-    await say(`<@${userId}> Found ${payload.items.length} SKU(s) still needing labels for "${payload.shipment}", sending to the print server:\n${lines}`);
+    const lines = result.items.map((item) => `• ${item.sku} — ${item.quantity}`).join('\n');
+    await say(`<@${userId}> [Test print -- nothing physical] Found ${result.items.length} SKU(s) still needing labels for "${result.shipment}":\n${lines}`);
 
     try {
-        await submitPrintJob(payload.items);
-        await say(`<@${userId}> Print job sent for "${payload.shipment}" (${payload.items.length} SKU(s)).`);
+        await submitTestPrintJob(result.items);
+        await say(`<@${userId}> Test print finished for "${result.shipment}" (${result.items.length} SKU(s)) -- labels were downloaded, not sent to the printer.`);
     } catch (error) {
-        console.error('Print job failed:', error.message);
-        await say(`<@${userId}> Sorry, the print job failed: ${error.message}`);
+        console.error('Test print job failed:', error.message);
+        await say(`<@${userId}> Sorry, the test print job failed: ${error.message}`);
     }
+}
+
+/* In-memory only, per Slack user -- a real print request is held here
+    awaiting confirmation instead of firing immediately. Deliberately does
+    not survive a bot restart, and a new print request from the same user
+    simply overwrites (silently cancels) any prior pending one; for a single
+    warehouse operator that's an acceptable simplification. */
+const pendingRealPrints = new Map();
+const PENDING_PRINT_CONFIRM_TIMEOUT_MS = 2 * 60 * 1000;
+
+/* Confirmation requires both "print" and a confirm word together (not just
+    "yes" or "go" alone) -- this bot reacts to plain, unmentioned channel
+    messages for its other commands too, and a bare "yes" is common enough in
+    ordinary chat that requiring it alone here would risk firing a real,
+    unrecoverable print job by accident. Cancelling has no such downside, so
+    it stays a single-word match. */
+const PRINT_CONFIRM_WORDS = new Set(['confirm', 'yes', 'go', 'proceed', 'y']);
+const PRINT_CANCEL_WORDS = new Set(['no', 'n', 'cancel', 'stop', 'nevermind', 'abort']);
+
+function tokenizeForConfirmation(text) {
+    return text.toLowerCase().match(/[a-z0-9]+/g) || [];
+}
+
+function isPrintConfirmation(tokens) {
+    return tokens.includes('print') && tokens.some((token) => PRINT_CONFIRM_WORDS.has(token));
+}
+
+function isPrintCancellation(tokens) {
+    return tokens.some((token) => PRINT_CANCEL_WORDS.has(token));
+}
+
+/* Checked before normal intent routing on every message. Returns true if
+    this message was consumed as a reply to a pending confirmation (caller
+    should stop routing), false otherwise (caller should fall through to
+    parseIntent as usual -- including when a pending confirmation existed but
+    expired, or the message didn't look like a confirm/cancel). */
+async function handlePendingPrintConfirmation(text, userId, say) {
+    const pending = pendingRealPrints.get(userId);
+    if (!pending) {
+        return false;
+    }
+
+    if (Date.now() > pending.expiresAt) {
+        pendingRealPrints.delete(userId);
+        return false;
+    }
+
+    const tokens = tokenizeForConfirmation(text);
+
+    if (isPrintCancellation(tokens)) {
+        pendingRealPrints.delete(userId);
+        await say(`<@${userId}> Cancelled -- nothing was sent to the printer.`);
+        return true;
+    }
+
+    if (isPrintConfirmation(tokens)) {
+        pendingRealPrints.delete(userId);
+        try {
+            await submitPrintJob(pending.items);
+            await say(`<@${userId}> Print job sent for "${pending.shipment}" (${pending.items.length} SKU(s)).`);
+        } catch (error) {
+            console.error('Print job failed:', error.message);
+            await say(`<@${userId}> Sorry, the print job failed: ${error.message}`);
+        }
+        return true;
+    }
+
+    return false;
+}
+
+/* Fetches the named (or, if none was given, current) shipment's
+    unprinted-label rows from Airtable, then asks the user to confirm before
+    sending them to the RPi print server's real /print route -- unlike the
+    dry run, this sends labels to a physical printer and can't be undone.
+    The eventual success/failure reply only reports the SKU count, not the
+    print server's own response body, which is that automation's internal
+    output and free to change shape independently of this bot. */
+async function handlePrintRemainingLabels(text, say, userId) {
+    const result = await resolveShipmentAndFetchRemaining(text);
+    if (await sayShipmentResolutionError(result, say, userId, 'print remaining labels for the august 21 shipment')) {
+        return;
+    }
+
+    if (result.items.length === 0) {
+        await say(`<@${userId}> No remaining labels to print for "${result.shipment}" -- everything's already printed.`);
+        return;
+    }
+
+    pendingRealPrints.set(userId, {
+        shipment: result.shipment,
+        items: result.items,
+        expiresAt: Date.now() + PENDING_PRINT_CONFIRM_TIMEOUT_MS,
+    });
+
+    const lines = result.items.map((item) => `• ${item.sku} — ${item.quantity}`).join('\n');
+    await say(`<@${userId}> This will send ${result.items.length} SKU(s) to the *physical printer* for "${result.shipment}":\n${lines}\nReply *confirm print* to proceed, or *cancel* to stand down (expires in 2 minutes).`);
 }
 
 /* Reports remaining-label counts across every known shipment table (paced
@@ -167,42 +285,24 @@ async function handleQueryShipmentStatus(text, say, userId) {
         return;
     }
 
-    let result;
-    try {
-        result = await findShipmentTable(text);
-    } catch (error) {
-        console.error('Failed to look up shipment tables:', error.message);
-        await say(`<@${userId}> Sorry, I couldn't look up shipment tables: ${error.message}`);
+    /* Shares resolveShipmentAndFetchRemaining with the print handlers so
+        "check current shipment" (no name given) resolves to
+        DEFAULT_SHIPMENT_TABLE the same way "print remaining labels for the
+        current shipment" does, rather than reporting "couldn't tell which
+        shipment" just because this command used to call findShipmentTable
+        directly, which has no such fallback. */
+    const result = await resolveShipmentAndFetchRemaining(text);
+    if (await sayShipmentResolutionError(result, say, userId, 'check status of the august 21 shipment')) {
         return;
     }
 
-    if (result.status === 'not_found') {
-        await say(`<@${userId}> I couldn't tell which shipment you meant. Try naming it, e.g. "check status of the august 21 shipment".`);
+    if (result.items.length === 0) {
+        await say(`<@${userId}> "${result.shipment}" has no remaining labels to print -- everything's already printed.`);
         return;
     }
 
-    if (result.status === 'ambiguous') {
-        const names = result.matches.map((table) => `"${table.name}"`).join(', ');
-        await say(`<@${userId}> That matches more than one shipment: ${names}. Can you be more specific?`);
-        return;
-    }
-
-    let payload;
-    try {
-        payload = await fetchRemainingLabelsForTable(result.table.name);
-    } catch (error) {
-        console.error('Failed to fetch shipment data:', error.message);
-        await say(`<@${userId}> Sorry, I couldn't read "${result.table.name}": ${error.message}`);
-        return;
-    }
-
-    if (payload.items.length === 0) {
-        await say(`<@${userId}> "${payload.shipment}" has no remaining labels to print -- everything's already printed.`);
-        return;
-    }
-
-    const lines = payload.items.map((item) => `• ${item.sku} — ${item.quantity}`).join('\n');
-    await say(`<@${userId}> "${payload.shipment}" has ${payload.items.length} SKU(s) still needing labels:\n${lines}`);
+    const lines = result.items.map((item) => `• ${item.sku} — ${item.quantity}`).join('\n');
+    await say(`<@${userId}> "${result.shipment}" has ${result.items.length} SKU(s) still needing labels:\n${lines}`);
 }
 
 /* Socket Mode opens an outbound WebSocket from here to Slack instead of
@@ -215,6 +315,13 @@ const app = new App({
 });
 
 async function routeMessage(text, userId, say) {
+    /* Checked before intent parsing so a reply like "confirm print" is
+        consumed as an answer to a pending real-print request rather than
+        (harmlessly, but confusingly) being re-parsed as a fresh command. */
+    if (await handlePendingPrintConfirmation(text, userId, say)) {
+        return;
+    }
+
     const { intent } = parseIntent(text);
     const shipmentId = extractShipmentId(text);
     console.log(`"${text}" -> intent=${intent}, shipmentId=${shipmentId}, user=${userId}`);
@@ -227,6 +334,17 @@ async function routeMessage(text, userId, say) {
         }
 
         await handlePrintRemainingLabels(text, say, userId);
+        return;
+    }
+
+    if (intent === 'test_print_remaining_labels') {
+        if (!isAuthorized(userId)) {
+            console.warn(`Blocked unauthorized test print request from user ${userId}`);
+            await say(`<@${userId}> Sorry, you're not authorized to run print jobs. Ask an admin to add your Slack user ID to the allowlist.`);
+            return;
+        }
+
+        await handleTestPrintRemainingLabels(text, say, userId);
         return;
     }
 
