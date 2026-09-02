@@ -26,6 +26,7 @@ const STOPWORDS = new Set([
     'please', 'whats', 'what', 'is', 'are', 's',
     'print', 'printing', 'remaining', 'left', 'outstanding', 'unprinted',
     'label', 'labels', 'current', 'send', 'sending', 'printer', 'to',
+    'test', 'dry',
 ]);
 
 function tokenize(text) {
