@@ -23,7 +23,7 @@ async function fetchRemainingLabelsForTable(tableName) {
 
     await base(tableName)
         .select({
-            filterByFormula: 'NOT({Label Printed})',
+            filterByFormula: 'AND(NOT({Label Printed}), {Checked In})',
             fields: ['SKU', 'Labels'],
         })
         .eachPage((records, fetchNextPage) => {
