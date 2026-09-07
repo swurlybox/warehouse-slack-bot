@@ -48,6 +48,49 @@ function fetchRemainingLabels() {
     return fetchRemainingLabelsForTable(SHIPMENT_TABLE);
 }
 
+/* Looks up specific SKUs within a shipment table by exact name match,
+    regardless of Label Printed / Checked In status -- used for targeted
+    reprints, where the whole point is printing something outside the normal
+    remaining-labels filter (e.g. a damaged label). Callers are expected to
+    have already validated `skus` against SKU_TOKEN_PATTERN (shipment_lookup.js)
+    before this builds a filterByFormula out of them. Returns one result per
+    requested SKU: either its quantity plus flags for whether it's already
+    been printed / not yet checked in, or { notFound: true } if no row in the
+    table matches that SKU at all. */
+async function fetchLabelsBySkuForTable(tableName, skus) {
+    const uniqueSkus = [...new Set(skus)];
+    const formula = `OR(${uniqueSkus.map((sku) => `{SKU} = "${sku}"`).join(', ')})`;
+    const found = new Map();
+
+    await base(tableName)
+        .select({
+            filterByFormula: formula,
+            fields: ['SKU', 'Labels', 'Label Printed', 'Checked In'],
+        })
+        .eachPage((records, fetchNextPage) => {
+            for (const record of records) {
+                const sku = record.get('SKU');
+                const quantity = record.get('Labels');
+
+                if (!sku || !Number.isFinite(quantity)) {
+                    console.warn(`Skipping record ${record.id}: missing SKU or Labels value.`);
+                    continue;
+                }
+
+                found.set(sku, {
+                    sku,
+                    quantity,
+                    alreadyPrinted: Boolean(record.get('Label Printed')),
+                    notCheckedIn: !record.get('Checked In'),
+                });
+            }
+            fetchNextPage();
+        });
+
+    const results = uniqueSkus.map((sku) => found.get(sku) || { sku, notFound: true });
+    return { shipment: tableName, results };
+}
+
 /* Only run as a CLI script when invoked directly (`node fetch_remaining_labels.js`
     or `npm run fetch-remaining-labels`) -- when required as a module (e.g. by
     slack_bot.js) this just exports the function below. */
@@ -62,4 +105,4 @@ if (require.main === module) {
         });
 }
 
-module.exports = { fetchRemainingLabels, fetchRemainingLabelsForTable, DEFAULT_SHIPMENT_TABLE: SHIPMENT_TABLE };
+module.exports = { fetchRemainingLabels, fetchRemainingLabelsForTable, fetchLabelsBySkuForTable };

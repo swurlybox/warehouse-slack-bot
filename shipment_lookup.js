@@ -67,6 +67,37 @@ function extractShipmentQueryTokens(text) {
     return tokenize(stripSlackMentions(text)).filter((token) => !STOPWORDS.has(token));
 }
 
+/* Same character class as rpi-job-scheduler's validate_label_requests.js SKU
+    check -- real SKUs never contain quotes or parens, so this doubles as a
+    guard against building an Airtable filterByFormula out of anything that
+    could break out of its string literal. */
+const SKU_TOKEN_PATTERN = /^[A-Za-z0-9._-]+$/;
+
+/* Parses "print sku(s) <SKU>[, <SKU>...] from <shipment name>" into its SKU
+    list and shipment-name portion. The literal word "from" is the required
+    boundary between the two -- SKUs are arbitrary strings, so there's no safe
+    way to tell them apart from shipment-name words without a fixed anchor.
+    Returns null if the message doesn't have that shape at all, or if nothing
+    between "sku(s)" and "from" looked like a valid SKU -- callers should
+    report a usage error in either case. */
+function parseSkuPrintCommand(text) {
+    const match = stripSlackMentions(text).match(/\bskus?\b\s*:?\s*([\s\S]*?)\bfrom\b([\s\S]*)/i);
+    if (!match) {
+        return null;
+    }
+
+    const skus = match[1]
+        .split(/[,\s]+/)
+        .map((token) => token.trim())
+        .filter((token) => SKU_TOKEN_PATTERN.test(token));
+
+    if (skus.length === 0) {
+        return null;
+    }
+
+    return { skus, shipmentQuery: match[2] };
+}
+
 /* Deliberately left out of STOPWORDS above -- these words need to survive
     into the leftover token list so isAllShipmentsQuery can recognize them,
     rather than being silently discarded like other filler. */
@@ -147,4 +178,5 @@ module.exports = {
     findShipmentTable,
     isAllShipmentsQuery,
     fetchRemainingLabelsForAllShipments,
+    parseSkuPrintCommand,
 };

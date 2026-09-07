@@ -1,9 +1,9 @@
 require('dotenv').config();
 const { App } = require('@slack/bolt');
-const { fetchRemainingLabelsForTable, DEFAULT_SHIPMENT_TABLE } = require('./fetch_remaining_labels');
+const { fetchRemainingLabelsForTable, fetchLabelsBySkuForTable } = require('./fetch_remaining_labels');
 const { parseIntent, extractShipmentId } = require('./intent_parser');
 const { submitPrintJob, submitTestPrintJob } = require('./print_service');
-const { findShipmentTable, isAllShipmentsQuery, fetchRemainingLabelsForAllShipments } = require('./shipment_lookup');
+const { findShipmentTable, isAllShipmentsQuery, fetchRemainingLabelsForAllShipments, parseSkuPrintCommand } = require('./shipment_lookup');
 
 const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN;
 const SLACK_APP_TOKEN = process.env.SLACK_APP_TOKEN;
@@ -13,12 +13,14 @@ if (!SLACK_BOT_TOKEN || !SLACK_APP_TOKEN) {
     process.exit(1);
 }
 
-const EXAMPLE_USAGE = 'Try something like: "print remaining labels for the current shipment"';
+const EXAMPLE_USAGE = 'Try something like: "print remaining labels for the august 21 shipment"';
 
 const HELP_TEXT = [
     "Here's what I can do:",
-    '• *print remaining labels [for the [shipment name] shipment]* -- finds unprinted labels for the named shipment (e.g. "august 21"), or the current shipment if none is named, and sends them to the PHYSICAL PRINTER. Asks for confirmation first since this can\'t be undone.',
-    '• *test print remaining labels [for the [shipment name] shipment]* -- same lookup, but downloads the label PDFs instead of printing them for real. No confirmation needed.',
+    '• *print remaining labels for the [shipment name] shipment* -- finds unprinted labels for the named shipment (e.g. "august 21") and sends them to the PHYSICAL PRINTER. You must name a shipment. Asks for confirmation first since this can\'t be undone.',
+    '• *test print remaining labels for the [shipment name] shipment* -- same lookup, but downloads the label PDFs instead of printing them for real. No confirmation needed.',
+    '• *print sku(s) [SKU, SKU, ...] from the [shipment name] shipment* -- targeted reprint of specific SKUs, even ones already printed or not checked in (flagged in the confirmation). Same physical-printer confirmation as above.',
+    '• *test print sku(s) [SKU, SKU, ...] from the [shipment name] shipment* -- same targeted lookup, downloads only, no confirmation needed.',
     '• *check status of the [shipment name] shipment* -- looks up a shipment by name (e.g. "august 21") and lists its remaining unprinted labels.',
     '• *check status of all shipments* -- reports remaining-label counts across every shipment (print does not support "all" -- name one shipment to print).',
     '• *help* -- shows this message.',
@@ -45,18 +47,16 @@ function isAuthorized(userId) {
 }
 
 /* Resolves which shipment table a print/query command should target: an
-    explicitly named shipment (e.g. "for the august 21 shipment") wins, an
-    empty query (e.g. "print remaining labels for the current shipment", which
-    reduces to no leftover words once command filler is stripped) falls back
-    to DEFAULT_SHIPMENT_TABLE, and a name that matches zero or multiple tables
-    is reported back to the caller to handle -- callers should not print
-    against an ambiguous or unresolved shipment. */
+    explicitly named shipment (e.g. "for the august 21 shipment") wins; an
+    empty query, an unmatched name, or a name that matches multiple tables is
+    reported back to the caller to handle -- callers should not print against
+    an ambiguous or unresolved shipment. There is deliberately no default
+    shipment: a table like "Next Shipment" gets renamed to a dated name as
+    part of the team's normal Airtable workflow, so relying on a fixed
+    fallback name broke unpredictably whenever that happened. */
 async function resolveShipmentTableName(text) {
     const result = await findShipmentTable(text);
 
-    if (result.status === 'not_found' && result.queryTokens.length === 0) {
-        return { status: 'ok', tableName: DEFAULT_SHIPMENT_TABLE };
-    }
     if (result.status === 'ok') {
         return { status: 'ok', tableName: result.table.name };
     }
@@ -115,6 +115,72 @@ async function sayShipmentResolutionError(result, say, userId, exampleCommand) {
         return true;
     }
     return false;
+}
+
+/* Resolves a "print sku(s) ... from ... shipment" command: parses the SKU
+    list and shipment name apart, resolves the shipment the same way every
+    other command does, then looks up each named SKU directly (bypassing the
+    remaining-labels filter on purpose -- see fetchLabelsBySkuForTable). Any
+    SKU not found in the resolved table blocks the whole request rather than
+    silently printing a partial list, since a mistyped SKU in a targeted
+    reprint is exactly the kind of thing that shouldn't fail quietly. */
+async function resolveSkuPrintRequest(text) {
+    const parsed = parseSkuPrintCommand(text);
+    if (!parsed) {
+        return { status: 'parse_error' };
+    }
+
+    const resolved = await resolveShipmentTableName(parsed.shipmentQuery).catch((error) => {
+        console.error('Failed to look up shipment tables:', error.message);
+        return { status: 'error', message: error.message };
+    });
+
+    if (resolved.status !== 'ok') {
+        return resolved;
+    }
+
+    let payload;
+    try {
+        payload = await fetchLabelsBySkuForTable(resolved.tableName, parsed.skus);
+    } catch (error) {
+        console.error('Failed to fetch labels by SKU:', error.message);
+        return { status: 'error', message: error.message };
+    }
+
+    const notFound = payload.results.filter((r) => r.notFound).map((r) => r.sku);
+    if (notFound.length > 0) {
+        return { status: 'sku_not_found', shipment: payload.shipment, notFound };
+    }
+
+    return { status: 'ok', shipment: payload.shipment, items: payload.results };
+}
+
+/* Reports resolveSkuPrintRequest's SKU-specific failure modes; falls through
+    to sayShipmentResolutionError for the shipment-resolution failures they
+    share with every other command. Same true/false contract as that
+    function. */
+async function saySkuResolutionError(result, say, userId, exampleCommand) {
+    if (result.status === 'parse_error') {
+        await say(`<@${userId}> I couldn't tell which SKUs or shipment you meant. Try something like "${exampleCommand}".`);
+        return true;
+    }
+    if (result.status === 'sku_not_found') {
+        const skus = result.notFound.map((sku) => `"${sku}"`).join(', ');
+        await say(`<@${userId}> Couldn't find ${skus} in "${result.shipment}". Check the SKU(s) and try again.`);
+        return true;
+    }
+    return sayShipmentResolutionError(result, say, userId, exampleCommand);
+}
+
+/* Renders the reprint-safety flags (already printed / not checked in) that
+    make a targeted SKU reprint visibly different from a normal remaining-
+    labels print -- both flags show together when a SKU matches both, since
+    they're independent facts about the row. */
+function formatSkuFlags(item) {
+    const flags = [];
+    if (item.alreadyPrinted) flags.push('already printed');
+    if (item.notCheckedIn) flags.push('not checked in');
+    return flags.length ? `  ⚠ ${flags.join(', ')}` : '';
 }
 
 /* Downloads label PDFs for the named (or default) shipment without ever
@@ -211,10 +277,10 @@ async function handlePendingPrintConfirmation(text, userId, say) {
     return false;
 }
 
-/* Fetches the named (or, if none was given, current) shipment's
-    unprinted-label rows from Airtable, then asks the user to confirm before
-    sending them to the RPi print server's real /print route -- unlike the
-    dry run, this sends labels to a physical printer and can't be undone.
+/* Fetches the named shipment's unprinted-label rows from Airtable, then asks
+    the user to confirm before sending them to the RPi print server's real
+    /print route -- unlike the dry run, this sends labels to a physical
+    printer and can't be undone.
     The eventual success/failure reply only reports the SKU count, not the
     print server's own response body, which is that automation's internal
     output and free to change shape independently of this bot. */
@@ -236,6 +302,52 @@ async function handlePrintRemainingLabels(text, say, userId) {
     });
 
     const lines = result.items.map((item) => `• ${item.sku} — ${item.quantity}`).join('\n');
+    await say(`<@${userId}> This will send ${result.items.length} SKU(s) to the *physical printer* for "${result.shipment}":\n${lines}\nReply *confirm print* to proceed, or *cancel* to stand down (expires in 2 minutes).`);
+}
+
+/* Downloads label PDFs for specific, named SKUs within a shipment -- a
+    targeted reprint tool, so unlike handleTestPrintRemainingLabels this
+    intentionally bypasses the unprinted/checked-in filter (see
+    fetchLabelsBySkuForTable) and flags any SKU found outside it. Safe to run
+    without confirmation, same as the other test-print command. */
+async function handleTestPrintSpecificSkus(text, say, userId) {
+    const result = await resolveSkuPrintRequest(text);
+    const exampleCommand = 'test print sku B08ABC123 from the august 21 shipment';
+    if (await saySkuResolutionError(result, say, userId, exampleCommand)) {
+        return;
+    }
+
+    const lines = result.items.map((item) => `• ${item.sku} — ${item.quantity}${formatSkuFlags(item)}`).join('\n');
+    await say(`<@${userId}> [Test print -- nothing physical] Found ${result.items.length} SKU(s) for "${result.shipment}":\n${lines}`);
+
+    try {
+        await submitTestPrintJob(result.items.map(({ sku, quantity }) => ({ sku, quantity })));
+        await say(`<@${userId}> Test print finished for "${result.shipment}" (${result.items.length} SKU(s)) -- labels were downloaded, not sent to the printer.`);
+    } catch (error) {
+        console.error('Test print job failed:', error.message);
+        await say(`<@${userId}> Sorry, the test print job failed: ${error.message}`);
+    }
+}
+
+/* Same targeted-reprint lookup as handleTestPrintSpecificSkus, but asks for
+    confirmation before sending to the physical printer -- any SKU flagged as
+    already printed or not checked in is called out in the confirmation
+    message so the user knowingly signs off on the reprint, not just the SKU
+    list and quantities. */
+async function handlePrintSpecificSkus(text, say, userId) {
+    const result = await resolveSkuPrintRequest(text);
+    const exampleCommand = 'print sku B08ABC123 from the august 21 shipment';
+    if (await saySkuResolutionError(result, say, userId, exampleCommand)) {
+        return;
+    }
+
+    pendingRealPrints.set(userId, {
+        shipment: result.shipment,
+        items: result.items.map(({ sku, quantity }) => ({ sku, quantity })),
+        expiresAt: Date.now() + PENDING_PRINT_CONFIRM_TIMEOUT_MS,
+    });
+
+    const lines = result.items.map((item) => `• ${item.sku} — ${item.quantity}${formatSkuFlags(item)}`).join('\n');
     await say(`<@${userId}> This will send ${result.items.length} SKU(s) to the *physical printer* for "${result.shipment}":\n${lines}\nReply *confirm print* to proceed, or *cancel* to stand down (expires in 2 minutes).`);
 }
 
@@ -285,12 +397,9 @@ async function handleQueryShipmentStatus(text, say, userId) {
         return;
     }
 
-    /* Shares resolveShipmentAndFetchRemaining with the print handlers so
-        "check current shipment" (no name given) resolves to
-        DEFAULT_SHIPMENT_TABLE the same way "print remaining labels for the
-        current shipment" does, rather than reporting "couldn't tell which
-        shipment" just because this command used to call findShipmentTable
-        directly, which has no such fallback. */
+    /* Shares resolveShipmentAndFetchRemaining with the print handlers so this
+        command's error handling (ambiguous name, lookup failure, no name
+        given) stays identical to theirs instead of duplicating it. */
     const result = await resolveShipmentAndFetchRemaining(text);
     if (await sayShipmentResolutionError(result, say, userId, 'check status of the august 21 shipment')) {
         return;
@@ -345,6 +454,28 @@ async function routeMessage(text, userId, say) {
         }
 
         await handleTestPrintRemainingLabels(text, say, userId);
+        return;
+    }
+
+    if (intent === 'print_specific_skus') {
+        if (!isAuthorized(userId)) {
+            console.warn(`Blocked unauthorized print request from user ${userId}`);
+            await say(`<@${userId}> Sorry, you're not authorized to run print jobs. Ask an admin to add your Slack user ID to the allowlist.`);
+            return;
+        }
+
+        await handlePrintSpecificSkus(text, say, userId);
+        return;
+    }
+
+    if (intent === 'test_print_specific_skus') {
+        if (!isAuthorized(userId)) {
+            console.warn(`Blocked unauthorized test print request from user ${userId}`);
+            await say(`<@${userId}> Sorry, you're not authorized to run print jobs. Ask an admin to add your Slack user ID to the allowlist.`);
+            return;
+        }
+
+        await handleTestPrintSpecificSkus(text, say, userId);
         return;
     }
 

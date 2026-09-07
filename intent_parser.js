@@ -31,6 +31,36 @@ const INTENT_RULES = [
             ['label', 'labels', 'shipment', 'shipments'],
         ],
     },
+    /* Must come before 'print_specific_skus' for the same reason as
+        test_print_remaining_labels above -- "test print sku X from Y
+        shipment" satisfies that rule's groups too. No shipment-word group
+        here on purpose: a message missing "from ... shipment" entirely
+        (e.g. "test print sku X") should still reach this intent so
+        parseSkuPrintCommand's own usage-error message fires, instead of
+        falling all the way to the generic 'unknown' fallback just because
+        the word "shipment" itself never appeared. */
+    {
+        intent: 'test_print_specific_skus',
+        groups: [
+            ['test', 'dry'],
+            ['print'],
+            ['sku', 'skus'],
+        ],
+    },
+    /* A targeted reprint of specific SKUs (see slack_bot.js's
+        handlePrintSpecificSkus) -- bypasses the unprinted/checked-in filter
+        on purpose, since the point is reprinting something outside it (e.g.
+        a damaged label). Doesn't overlap with print_remaining_labels above
+        (no remaining/left/outstanding/unprinted word here), so order
+        relative to that rule doesn't matter, only relative to its own test
+        variant just above. Same no-shipment-word reasoning as that rule. */
+    {
+        intent: 'print_specific_skus',
+        groups: [
+            ['print'],
+            ['sku', 'skus'],
+        ],
+    },
     /* Also listed before 'help' for the same reason -- "can you help check
         the status of the august 21 shipment" should resolve to this, not
         help. Doesn't require 'print' (or an authorized user) since it's
