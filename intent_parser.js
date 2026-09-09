@@ -101,7 +101,20 @@ const tool = {
                 items: { type: "string" },
                 description: "SKU identifiers mentioned in the message, if any"
             },
-            shipment_ref: { type: "string", description: "Explicit shipment identifier if mentioned, else omit" },
+            /* Downstream code (shipment_lookup.js's isAllShipmentsQuery) only
+                recognizes an all-shipments request by finding a lone
+                all/every/everything token in this field -- if the model just
+                omitted shipment_ref for a request naming no single shipment
+                (its natural reading of "if mentioned, else omit" below),
+                that check silently misses and the request gets treated as
+                an unresolved single-shipment name instead. Spelling out the
+                all-shipments case explicitly keeps this a single string
+                field rather than adding a second boolean the rest of the
+                code would also have to check. */
+            shipment_ref: {
+                type: "string",
+                description: "Explicit shipment identifier if one specific shipment is named (e.g. 'August 21 Shipment', 'current'). If the user is asking about every shipment rather than naming one, set this to \"all\" instead of omitting it. Omit only when neither applies."
+            },
             confidence: { type: "number" }
         },
         required: ["intent", "confidence"]
