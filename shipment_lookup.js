@@ -179,4 +179,5 @@ module.exports = {
     isAllShipmentsQuery,
     fetchRemainingLabelsForAllShipments,
     parseSkuPrintCommand,
+    SKU_TOKEN_PATTERN,
 };

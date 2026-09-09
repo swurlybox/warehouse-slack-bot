@@ -112,11 +112,39 @@ function tokenize(text) {
     return text.toLowerCase().match(/[a-z0-9]+/g) || [];
 }
 
-/* Returns { intent }. 'unknown' is an explicit, expected result -- not a
-    failure -- for any message that doesn't satisfy a full rule; callers
-    should reply with example usage rather than failing silently. */
-async function parseIntent(text) {
+/* Produces the same { skus?, shipmentRef? } shape the LLM path returns
+    from its classify_intent tool call, but via the rule-based path's
+    existing regex extraction -- so slack_bot.js's handlers can consume
+    either path's output identically without knowing which one ran.
+    Only the SKU-targeted intents need SKU parsing; the shipment-name-only
+    intents just pass the raw message through as shipmentRef, since
+    findShipmentTable's own stopword-stripping (shipment_lookup.js)
+    already pulls the name out of it regardless of surrounding command
+    phrasing -- no separate extraction step exists for those today. */
+function extractRuleBasedEntities(intent, text) {
+    if (intent === 'print_specific_skus' || intent === 'test_print_specific_skus') {
+        /* Required lazily, not at module load, so classifying an intent
+            that isn't SKU-specific (e.g. in a standalone unit test) never
+            triggers shipment_lookup.js's own AIRTABLE_API_KEY check. */
+        const { parseSkuPrintCommand } = require('./shipment_lookup');
+        const parsed = parseSkuPrintCommand(text);
+        return parsed ? { skus: parsed.skus, shipmentRef: parsed.shipmentQuery } : {};
+    }
 
+    if (intent === 'print_remaining_labels' || intent === 'test_print_remaining_labels' || intent === 'query_shipment_status') {
+        return { shipmentRef: text };
+    }
+
+    return {};
+}
+
+/* Returns { intent, skus?, shipmentRef?, confidence? } -- the same shape
+    regardless of which parser produced it, so callers never need to branch
+    on INTENT_PARSER themselves. 'unknown' is an explicit, expected result
+    -- not a failure -- for any message that doesn't satisfy a full rule (or
+    that the LLM couldn't classify); callers should reply with example usage
+    rather than failing silently. */
+async function parseIntent(text) {
     if (process.env.INTENT_PARSER == "llm_based") {
         const claude_response = await client.messages.create({
             model: "claude-haiku-4-5",
@@ -133,10 +161,16 @@ async function parseIntent(text) {
 
         console.dir(claude_response, {depth: null, color: true});
 
-        return { intent: claude_response.content[0].input.intent};
+        const output = claude_response.content[0].input;
+        return {
+            intent: output.intent,
+            skus: output.skus,
+            shipmentRef: output.shipment_ref,
+            confidence: output.confidence,
+        };
     }
 
-    else { 
+    else {
         const tokens = tokenize(text);
 
         for (const rule of INTENT_RULES) {
@@ -145,7 +179,7 @@ async function parseIntent(text) {
             );
 
             if (matchesEveryGroup) {
-                return { intent: rule.intent };
+                return { intent: rule.intent, ...extractRuleBasedEntities(rule.intent, text) };
             }
         }
 

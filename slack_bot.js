@@ -3,7 +3,7 @@ const { App } = require('@slack/bolt');
 const { fetchRemainingLabelsForTable, fetchLabelsBySkuForTable } = require('./fetch_remaining_labels');
 const { parseIntent, extractShipmentId } = require('./intent_parser');
 const { submitPrintJob, submitTestPrintJob } = require('./print_service');
-const { findShipmentTable, isAllShipmentsQuery, fetchRemainingLabelsForAllShipments, parseSkuPrintCommand } = require('./shipment_lookup');
+const { findShipmentTable, isAllShipmentsQuery, fetchRemainingLabelsForAllShipments, SKU_TOKEN_PATTERN } = require('./shipment_lookup');
 
 const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN;
 const SLACK_APP_TOKEN = process.env.SLACK_APP_TOKEN;
@@ -53,9 +53,15 @@ function isAuthorized(userId) {
     an ambiguous or unresolved shipment. There is deliberately no default
     shipment: a table like "Next Shipment" gets renamed to a dated name as
     part of the team's normal Airtable workflow, so relying on a fixed
-    fallback name broke unpredictably whenever that happened. */
-async function resolveShipmentTableName(text) {
-    const result = await findShipmentTable(text);
+    fallback name broke unpredictably whenever that happened.
+    shipmentRef may be the raw message text (rule-based path, which relies on
+    findShipmentTable's own stopword-stripping to pull the name out of it) or
+    a clean phrase (LLM path) -- either shape works since findShipmentTable
+    tokenizes and matches on leftover words either way. May be undefined
+    (the LLM path can omit shipment_ref entirely), which resolves the same
+    way an empty query already does: 'not_found'. */
+async function resolveShipmentTableName(shipmentRef) {
+    const result = await findShipmentTable(shipmentRef || '');
 
     if (result.status === 'ok') {
         return { status: 'ok', tableName: result.table.name };
@@ -68,13 +74,15 @@ async function resolveShipmentTableName(text) {
     unsupported "all shipments" request, an Airtable lookup error, an
     unresolved/ambiguous name, or a fetch error -- into one result shape so
     both print handlers below can share the same error reporting instead of
-    duplicating it. */
-async function resolveShipmentAndFetchRemaining(text) {
-    if (isAllShipmentsQuery(text)) {
+    duplicating it. Takes a structured { shipmentRef } object rather than raw
+    text so both the rule-based and LLM-based intent parsers can call it
+    identically. */
+async function resolveShipmentAndFetchRemaining({ shipmentRef }) {
+    if (isAllShipmentsQuery(shipmentRef || '')) {
         return { status: 'all_not_supported' };
     }
 
-    const resolved = await resolveShipmentTableName(text).catch((error) => {
+    const resolved = await resolveShipmentTableName(shipmentRef).catch((error) => {
         console.error('Failed to look up shipment tables:', error.message);
         return { status: 'error', message: error.message };
     });
@@ -117,20 +125,27 @@ async function sayShipmentResolutionError(result, say, userId, exampleCommand) {
     return false;
 }
 
-/* Resolves a "print sku(s) ... from ... shipment" command: parses the SKU
-    list and shipment name apart, resolves the shipment the same way every
+/* Resolves a "print sku(s) ... from ... shipment" request: takes the
+    already-extracted SKU list and shipment reference (either parser's
+    output -- see intent_parser.js), resolves the shipment the same way every
     other command does, then looks up each named SKU directly (bypassing the
     remaining-labels filter on purpose -- see fetchLabelsBySkuForTable). Any
     SKU not found in the resolved table blocks the whole request rather than
     silently printing a partial list, since a mistyped SKU in a targeted
-    reprint is exactly the kind of thing that shouldn't fail quietly. */
-async function resolveSkuPrintRequest(text) {
-    const parsed = parseSkuPrintCommand(text);
-    if (!parsed) {
+    reprint is exactly the kind of thing that shouldn't fail quietly.
+    Re-validates skus against SKU_TOKEN_PATTERN here (not just trusting the
+    rule-based path's own parseSkuPrintCommand filter) since the LLM path's
+    extracted skus reach this function without ever passing through that
+    regex -- this is what actually stops a malformed SKU from an arbitrarily-
+    phrased message breaking out of fetchLabelsBySkuForTable's formula
+    string, regardless of which parser produced it. */
+async function resolveSkuPrintRequest({ skus, shipmentRef }) {
+    const validSkus = (skus || []).filter((sku) => SKU_TOKEN_PATTERN.test(sku));
+    if (validSkus.length === 0 || !shipmentRef) {
         return { status: 'parse_error' };
     }
 
-    const resolved = await resolveShipmentTableName(parsed.shipmentQuery).catch((error) => {
+    const resolved = await resolveShipmentTableName(shipmentRef).catch((error) => {
         console.error('Failed to look up shipment tables:', error.message);
         return { status: 'error', message: error.message };
     });
@@ -141,7 +156,7 @@ async function resolveSkuPrintRequest(text) {
 
     let payload;
     try {
-        payload = await fetchLabelsBySkuForTable(resolved.tableName, parsed.skus);
+        payload = await fetchLabelsBySkuForTable(resolved.tableName, validSkus);
     } catch (error) {
         console.error('Failed to fetch labels by SKU:', error.message);
         return { status: 'error', message: error.message };
@@ -186,8 +201,8 @@ function formatSkuFlags(item) {
 /* Downloads label PDFs for the named (or default) shipment without ever
     sending them to a physical printer -- safe to run without confirmation,
     unlike handlePrintRemainingLabels below. */
-async function handleTestPrintRemainingLabels(text, say, userId) {
-    const result = await resolveShipmentAndFetchRemaining(text);
+async function handleTestPrintRemainingLabels({ shipmentRef }, say, userId) {
+    const result = await resolveShipmentAndFetchRemaining({ shipmentRef });
     if (await sayShipmentResolutionError(result, say, userId, 'test print remaining labels for the august 21 shipment')) {
         return;
     }
@@ -284,8 +299,8 @@ async function handlePendingPrintConfirmation(text, userId, say) {
     The eventual success/failure reply only reports the SKU count, not the
     print server's own response body, which is that automation's internal
     output and free to change shape independently of this bot. */
-async function handlePrintRemainingLabels(text, say, userId) {
-    const result = await resolveShipmentAndFetchRemaining(text);
+async function handlePrintRemainingLabels({ shipmentRef }, say, userId) {
+    const result = await resolveShipmentAndFetchRemaining({ shipmentRef });
     if (await sayShipmentResolutionError(result, say, userId, 'print remaining labels for the august 21 shipment')) {
         return;
     }
@@ -310,8 +325,8 @@ async function handlePrintRemainingLabels(text, say, userId) {
     intentionally bypasses the unprinted/checked-in filter (see
     fetchLabelsBySkuForTable) and flags any SKU found outside it. Safe to run
     without confirmation, same as the other test-print command. */
-async function handleTestPrintSpecificSkus(text, say, userId) {
-    const result = await resolveSkuPrintRequest(text);
+async function handleTestPrintSpecificSkus({ skus, shipmentRef }, say, userId) {
+    const result = await resolveSkuPrintRequest({ skus, shipmentRef });
     const exampleCommand = 'test print sku B08ABC123 from the august 21 shipment';
     if (await saySkuResolutionError(result, say, userId, exampleCommand)) {
         return;
@@ -334,8 +349,8 @@ async function handleTestPrintSpecificSkus(text, say, userId) {
     already printed or not checked in is called out in the confirmation
     message so the user knowingly signs off on the reprint, not just the SKU
     list and quantities. */
-async function handlePrintSpecificSkus(text, say, userId) {
-    const result = await resolveSkuPrintRequest(text);
+async function handlePrintSpecificSkus({ skus, shipmentRef }, say, userId) {
+    const result = await resolveSkuPrintRequest({ skus, shipmentRef });
     const exampleCommand = 'print sku B08ABC123 from the august 21 shipment';
     if (await saySkuResolutionError(result, say, userId, exampleCommand)) {
         return;
@@ -391,8 +406,8 @@ async function handleQueryAllShipmentsStatus(say, userId) {
     e.g. "august 21" -> "August 21 Shipment") and reports its remaining
     unprinted labels. Read-only -- no print job is triggered -- so unlike
     handlePrintRemainingLabels this isn't gated by isAuthorized. */
-async function handleQueryShipmentStatus(text, say, userId) {
-    if (isAllShipmentsQuery(text)) {
+async function handleQueryShipmentStatus({ shipmentRef }, say, userId) {
+    if (isAllShipmentsQuery(shipmentRef || '')) {
         await handleQueryAllShipmentsStatus(say, userId);
         return;
     }
@@ -400,7 +415,7 @@ async function handleQueryShipmentStatus(text, say, userId) {
     /* Shares resolveShipmentAndFetchRemaining with the print handlers so this
         command's error handling (ambiguous name, lookup failure, no name
         given) stays identical to theirs instead of duplicating it. */
-    const result = await resolveShipmentAndFetchRemaining(text);
+    const result = await resolveShipmentAndFetchRemaining({ shipmentRef });
     if (await sayShipmentResolutionError(result, say, userId, 'check status of the august 21 shipment')) {
         return;
     }
@@ -431,7 +446,7 @@ async function routeMessage(text, userId, say) {
         return;
     }
 
-    const { intent } = await parseIntent(text);
+    const { intent, skus, shipmentRef } = await parseIntent(text);
     const shipmentId = extractShipmentId(text);
     console.log(`"${text}" -> intent=${intent}, shipmentId=${shipmentId}, user=${userId}`);
 
@@ -442,7 +457,7 @@ async function routeMessage(text, userId, say) {
             return;
         }
 
-        await handlePrintRemainingLabels(text, say, userId);
+        await handlePrintRemainingLabels({ shipmentRef }, say, userId);
         return;
     }
 
@@ -453,7 +468,7 @@ async function routeMessage(text, userId, say) {
             return;
         }
 
-        await handleTestPrintRemainingLabels(text, say, userId);
+        await handleTestPrintRemainingLabels({ shipmentRef }, say, userId);
         return;
     }
 
@@ -464,7 +479,7 @@ async function routeMessage(text, userId, say) {
             return;
         }
 
-        await handlePrintSpecificSkus(text, say, userId);
+        await handlePrintSpecificSkus({ skus, shipmentRef }, say, userId);
         return;
     }
 
@@ -475,12 +490,12 @@ async function routeMessage(text, userId, say) {
             return;
         }
 
-        await handleTestPrintSpecificSkus(text, say, userId);
+        await handleTestPrintSpecificSkus({ skus, shipmentRef }, say, userId);
         return;
     }
 
     if (intent === 'query_shipment_status') {
-        await handleQueryShipmentStatus(text, say, userId);
+        await handleQueryShipmentStatus({ shipmentRef }, say, userId);
         return;
     }
 
