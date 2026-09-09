@@ -126,7 +126,7 @@ function extractRuleBasedEntities(intent, text) {
         /* Required lazily, not at module load, so classifying an intent
             that isn't SKU-specific (e.g. in a standalone unit test) never
             triggers shipment_lookup.js's own AIRTABLE_API_KEY check. */
-        const { parseSkuPrintCommand } = require('./shipment_lookup');
+        const { parseSkuPrintCommand } = require('./airtable/shipment_lookup');
         const parsed = parseSkuPrintCommand(text);
         return parsed ? { skus: parsed.skus, shipmentRef: parsed.shipmentQuery } : {};
     }

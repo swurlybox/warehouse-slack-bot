@@ -5,7 +5,7 @@
   "main": "slack_bot.js",
   "scripts": {
     "start": "node slack_bot.js",
-    "fetch-remaining-labels": "node fetch_remaining_labels.js"
+    "fetch-remaining-labels": "node airtable/fetch_remaining_labels.js"
   },
   "author": "",
   "license": "ISC",
