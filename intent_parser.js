@@ -1,3 +1,9 @@
+const { Anthropic } = require("@anthropic-ai/sdk");
+
+const client = new Anthropic({
+    apiKey: process.env["ANTHROPIC_API_KEY"],
+});
+
 /* Rule-based intent parsing: matches on action + scope + target keyword
     groups rather than an LLM call -- no API cost, predictable, and the
     command surface this bot handles is narrow enough that keyword rules
@@ -78,6 +84,30 @@ const INTENT_RULES = [
     },
 ];
 
+
+const tool = {
+    name: "classify_intent",
+    description: "Classify a warehouse Slack message into a known print intent",
+    input_schema: {
+        type: "object",
+        properties: {
+            intent: {
+                type: "string",
+                /* ... spread operator unpacks the array so no nested arrays happen. */
+                enum: [...INTENT_RULES.map(rule => rule.intent), 'unknown']
+            },
+            skus: {
+                type: "array",
+                items: { type: "string" },
+                description: "SKU identifiers mentioned in the message, if any"
+            },
+            shipment_ref: { type: "string", description: "Explicit shipment identifier if mentioned, else omit" },
+            confidence: { type: "number" }
+        },
+        required: ["intent", "confidence"]
+    }
+};
+
 function tokenize(text) {
     return text.toLowerCase().match(/[a-z0-9]+/g) || [];
 }
@@ -85,20 +115,42 @@ function tokenize(text) {
 /* Returns { intent }. 'unknown' is an explicit, expected result -- not a
     failure -- for any message that doesn't satisfy a full rule; callers
     should reply with example usage rather than failing silently. */
-function parseIntent(text) {
-    const tokens = tokenize(text);
+async function parseIntent(text) {
 
-    for (const rule of INTENT_RULES) {
-        const matchesEveryGroup = rule.groups.every((group) =>
-            group.some((word) => tokens.includes(word))
-        );
+    if (process.env.INTENT_PARSER == "llm_based") {
+        const claude_response = await client.messages.create({
+            model: "claude-haiku-4-5",
+            max_tokens: 1024,
+            tools: [tool],
+            tool_choice: { type: "tool", name: "classify_intent"},
+            messages: [
+                {
+                    role: "user",
+                    content: `${text}`, /* Slack message text */
+                }
+            ]
+        });
 
-        if (matchesEveryGroup) {
-            return { intent: rule.intent };
-        }
+        console.dir(claude_response, {depth: null, color: true});
+
+        return { intent: claude_response.content[0].input.intent};
     }
 
-    return { intent: 'unknown' };
+    else { 
+        const tokens = tokenize(text);
+
+        for (const rule of INTENT_RULES) {
+            const matchesEveryGroup = rule.groups.every((group) =>
+                group.some((word) => tokens.includes(word))
+            );
+
+            if (matchesEveryGroup) {
+                return { intent: rule.intent };
+            }
+        }
+
+        return { intent: 'unknown' };
+    }
 }
 
 const SHIPMENT_ID_PATTERN = /shipment\s*#?\s*([a-z0-9-]+)/i;

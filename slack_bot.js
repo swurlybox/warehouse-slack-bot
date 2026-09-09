@@ -431,7 +431,7 @@ async function routeMessage(text, userId, say) {
         return;
     }
 
-    const { intent } = parseIntent(text);
+    const { intent } = await parseIntent(text);
     const shipmentId = extractShipmentId(text);
     console.log(`"${text}" -> intent=${intent}, shipmentId=${shipmentId}, user=${userId}`);
 
