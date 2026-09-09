@@ -183,8 +183,6 @@ async function parseIntent(text) {
             return { intent: 'parser_error' };
         }
 
-        console.dir(claude_response, {depth: null, color: true});
-
         const output = claude_response.content[0].input;
         return {
             intent: output.intent,
