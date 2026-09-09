@@ -48,7 +48,10 @@ function fetchRemainingLabels() {
     return fetchRemainingLabelsForTable(SHIPMENT_TABLE);
 }
 
-/* Looks up specific SKUs within a shipment table by exact name match,
+/* Looks up specific SKUs within a shipment table by exact name match
+    (case-insensitively -- Airtable's own SKU casing is the source of truth,
+    but callers (e.g. the LLM intent parser) may echo back whatever casing
+    the user actually typed, which is often lowercase in casual chat),
     regardless of Label Printed / Checked In status -- used for targeted
     reprints, where the whole point is printing something outside the normal
     remaining-labels filter (e.g. a damaged label). Callers are expected to
@@ -59,7 +62,7 @@ function fetchRemainingLabels() {
     table matches that SKU at all. */
 async function fetchLabelsBySkuForTable(tableName, skus) {
     const uniqueSkus = [...new Set(skus)];
-    const formula = `OR(${uniqueSkus.map((sku) => `{SKU} = "${sku}"`).join(', ')})`;
+    const formula = `OR(${uniqueSkus.map((sku) => `LOWER({SKU}) = LOWER("${sku}")`).join(', ')})`;
     const found = new Map();
 
     await base(tableName)
@@ -77,7 +80,13 @@ async function fetchLabelsBySkuForTable(tableName, skus) {
                     continue;
                 }
 
-                found.set(sku, {
+                /* Keyed by uppercase, not the raw stored value, so the
+                    lookup below matches regardless of which casing the
+                    request came in with -- the formula match is already
+                    case-insensitive, but this Map lookup is a separate,
+                    local case-sensitive comparison that needs the same
+                    normalization or the formula fix alone doesn't help. */
+                found.set(sku.toUpperCase(), {
                     sku,
                     quantity,
                     alreadyPrinted: Boolean(record.get('Label Printed')),
@@ -87,7 +96,7 @@ async function fetchLabelsBySkuForTable(tableName, skus) {
             fetchNextPage();
         });
 
-    const results = uniqueSkus.map((sku) => found.get(sku) || { sku, notFound: true });
+    const results = uniqueSkus.map((sku) => found.get(sku.toUpperCase()) || { sku, notFound: true });
     return { shipment: tableName, results };
 }
 
