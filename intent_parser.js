@@ -143,21 +143,45 @@ function extractRuleBasedEntities(intent, text) {
     on INTENT_PARSER themselves. 'unknown' is an explicit, expected result
     -- not a failure -- for any message that doesn't satisfy a full rule (or
     that the LLM couldn't classify); callers should reply with example usage
-    rather than failing silently. */
+    rather than failing silently. 'parser_error' is a different, genuine
+    failure (the LLM call itself didn't complete) -- kept distinct from
+    'unknown' so slack_bot.js can tell a user "I didn't catch a command"
+    apart from "something's actually broken right now", instead of
+    conflating an infrastructure failure with the user having typed
+    something unparseable. The rule-based path has no equivalent failure
+    mode -- it's pure local computation, nothing to catch. */
 async function parseIntent(text) {
     if (process.env.INTENT_PARSER == "llm_based") {
-        const claude_response = await client.messages.create({
-            model: "claude-haiku-4-5",
-            max_tokens: 1024,
-            tools: [tool],
-            tool_choice: { type: "tool", name: "classify_intent"},
-            messages: [
-                {
-                    role: "user",
-                    content: `${text}`, /* Slack message text */
-                }
-            ]
-        });
+        let claude_response;
+        try {
+            claude_response = await client.messages.create({
+                model: "claude-haiku-4-5",
+                max_tokens: 1024,
+                tools: [tool],
+                tool_choice: { type: "tool", name: "classify_intent"},
+                messages: [
+                    {
+                        role: "user",
+                        content: `${text}`, /* Slack message text */
+                    }
+                ]
+            });
+        } catch (error) {
+            /* Most-specific-first, per the SDK's typed exception classes --
+                distinguishes retryable/operational causes in the logs even
+                though the user-facing outcome (a 'parser_error' intent) is
+                the same for all of them. */
+            if (error instanceof Anthropic.AuthenticationError) {
+                console.error('Intent classification failed: invalid or missing ANTHROPIC_API_KEY.', error.message);
+            } else if (error instanceof Anthropic.RateLimitError) {
+                console.error('Intent classification failed: rate limited by the Anthropic API.', error.message);
+            } else if (error instanceof Anthropic.APIError) {
+                console.error(`Intent classification failed: Anthropic API error (${error.status}).`, error.message);
+            } else {
+                console.error('Intent classification failed:', error.message);
+            }
+            return { intent: 'parser_error' };
+        }
 
         console.dir(claude_response, {depth: null, color: true});
 

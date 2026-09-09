@@ -504,6 +504,16 @@ async function routeMessage(text, userId, say) {
         return;
     }
 
+    /* Distinct from 'unknown' (a message that just didn't match anything) --
+        this means the LLM-based parser's API call itself failed (see
+        intent_parser.js), so telling the user "try rephrasing" would be
+        misleading. Not gated by isAuthorized: this can surface for any
+        command, including read-only ones. */
+    if (intent === 'parser_error') {
+        await say(`<@${userId}> Sorry, I'm having trouble understanding messages right now -- please try again in a moment.`);
+        return;
+    }
+
     await say(`<@${userId}> Sorry, I didn't catch a command in that. ${EXAMPLE_USAGE}`);
 }
 
