@@ -17,6 +17,7 @@ const EXAMPLE_USAGE = 'Try something like: "print remaining labels for the augus
 
 const HELP_TEXT = [
     "Here's what I can do:",
+    "_(You don't have to match this phrasing exactly -- natural language works too, e.g. \"hey can you check on the sept 10 shipment\")_",
     '• *print remaining labels for the [shipment name] shipment* -- finds unprinted labels for the named shipment (e.g. "august 21") and sends them to the PHYSICAL PRINTER. You must name a shipment. Asks for confirmation first since this can\'t be undone.',
     '• *test print remaining labels for the [shipment name] shipment* -- same lookup, but downloads the label PDFs instead of printing them for real. No confirmation needed.',
     '• *print sku(s) [SKU, SKU, ...] from the [shipment name] shipment* -- targeted reprint of specific SKUs, even ones already printed or not checked in (flagged in the confirmation). Same physical-printer confirmation as above.',
