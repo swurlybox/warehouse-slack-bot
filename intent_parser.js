@@ -85,6 +85,33 @@ const INTENT_RULES = [
 ];
 
 
+/* Disambiguates two failure modes seen in live testing where the model,
+    given only the bare schema below with no domain context, would get
+    confused by a message that leads with a SKU as its grammatical subject
+    (e.g. "NL-Y7SI-8FGG needs a real print, it's from the sept 10
+    shipment"): sometimes classifying the whole message as
+    print_remaining_labels (print EVERYTHING outstanding for a shipment --
+    a much bigger physical-print action than the one SKU actually named),
+    and sometimes classifying the intent correctly but duplicating the SKU
+    into shipment_ref instead of extracting the real shipment name. Spelled
+    out as an explicit system prompt (cheap, cacheable, and separate from
+    the per-message user content) rather than folded into the tool's field
+    descriptions alone, since this needs worked examples to reliably land,
+    not just a one-line rule. */
+const SYSTEM_PROMPT = `You classify Slack messages for a warehouse shipment-label printing bot. Every message is one worker's request; call classify_intent with your answer.
+
+Two kinds of things can appear in a message, and they never overlap:
+- A SKU is a product identifier made of alphanumeric segments separated by dashes (e.g. "0F-CA35-B7BM", "NL-Y7SI-8FGG"). Put every SKU-shaped token in \`skus\`, never in \`shipment_ref\` -- even when the SKU is the first word of the sentence or reads as its grammatical subject. Example: "NL-Y7SI-8FGG needs a real print, it's from the sept 10 shipment" names exactly one SKU (NL-Y7SI-8FGG, goes in \`skus\`) and one shipment (sept 10, goes in \`shipment_ref\`) -- the SKU coming first in the sentence does not make it the shipment.
+- A shipment reference is a shipment name, date, or the word "current" (e.g. "August 21 Shipment", "sept 10", "current") -- never a SKU-shaped token.
+
+Intent meanings:
+- print_remaining_labels / test_print_remaining_labels: print or dry-run every still-unprinted label for ONE named shipment. Use ONLY when the message names no specific SKU.
+- print_specific_skus / test_print_specific_skus: print or dry-run specific, named SKU(s), regardless of their printed status. Use whenever the message names one or more SKUs, even if it also mentions "remaining" or "left" in passing.
+- query_shipment_status: read-only status check, for one shipment or all of them.
+- help: asking what the bot can do.
+
+Rule of thumb: if a message names any SKU at all, the intent is one of the *_specific_skus variants, never a *_remaining_labels variant.`;
+
 const tool = {
     name: "classify_intent",
     description: "Classify a warehouse Slack message into a known print intent",
@@ -99,7 +126,7 @@ const tool = {
             skus: {
                 type: "array",
                 items: { type: "string" },
-                description: "SKU identifiers mentioned in the message, if any"
+                description: "SKU identifiers mentioned in the message, if any -- dash-separated alphanumeric product codes (e.g. \"0F-CA35-B7BM\"). Never put one of these in shipment_ref below, even if it appears earlier in the sentence than the shipment name."
             },
             /* Downstream code (shipment_lookup.js's isAllShipmentsQuery) only
                 recognizes an all-shipments request by finding a lone
@@ -170,6 +197,7 @@ async function parseIntent(text) {
             claude_response = await client.messages.create({
                 model: "claude-haiku-4-5",
                 max_tokens: 1024,
+                system: SYSTEM_PROMPT,
                 tools: [tool],
                 tool_choice: { type: "tool", name: "classify_intent"},
                 messages: [
