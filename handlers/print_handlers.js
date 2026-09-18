@@ -87,19 +87,17 @@ async function sayShipmentResolutionError(result, say, userId, exampleCommand) {
 }
 
 /* Resolves a "print sku(s) ... from ... shipment" request: takes the
-    already-extracted SKU list and shipment reference (either parser's
-    output -- see intent_parser.js), resolves the shipment the same way every
-    other command does, then looks up each named SKU directly (bypassing the
-    remaining-labels filter on purpose -- see fetchLabelsBySkuForTable). Any
-    SKU not found in the resolved table blocks the whole request rather than
-    silently printing a partial list, since a mistyped SKU in a targeted
-    reprint is exactly the kind of thing that shouldn't fail quietly.
-    Re-validates skus against SKU_TOKEN_PATTERN here (not just trusting the
-    rule-based path's own parseSkuPrintCommand filter) since the LLM path's
-    extracted skus reach this function without ever passing through that
-    regex -- this is what actually stops a malformed SKU from an arbitrarily-
-    phrased message breaking out of fetchLabelsBySkuForTable's formula
-    string, regardless of which parser produced it. */
+    already-extracted SKU list and shipment reference (see intent_parser.js),
+    resolves the shipment the same way every other command does, then looks
+    up each named SKU directly (bypassing the remaining-labels filter on
+    purpose -- see fetchLabelsBySkuForTable). Any SKU not found in the
+    resolved table blocks the whole request rather than silently printing a
+    partial list, since a mistyped SKU in a targeted reprint is exactly the
+    kind of thing that shouldn't fail quietly.
+    Re-validates skus against SKU_TOKEN_PATTERN here rather than trusting the
+    LLM's own extraction -- this is what actually stops a malformed SKU from
+    an arbitrarily-phrased message breaking out of fetchLabelsBySkuForTable's
+    formula string. */
 async function resolveSkuPrintRequest({ skus, shipmentRef }) {
     const validSkus = (skus || []).filter((sku) => SKU_TOKEN_PATTERN.test(sku));
     if (validSkus.length === 0 || !shipmentRef) {

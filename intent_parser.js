@@ -1,89 +1,35 @@
 const { Anthropic } = require("@anthropic-ai/sdk");
 
-const client = new Anthropic({
-    apiKey: process.env["ANTHROPIC_API_KEY"],
-});
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 
-/* Rule-based intent parsing: matches on action + scope + target keyword
-    groups rather than an LLM call -- no API cost, predictable, and the
-    command surface this bot handles is narrow enough that keyword rules
-    are sufficient. Add a new command by adding another rule to
-    INTENT_RULES; the first rule whose every group has at least one match
-    wins. */
-const INTENT_RULES = [
-    /* Must come before 'print_remaining_labels' -- "test print remaining
-        labels" satisfies that rule's groups too ('print' + a remaining-word
-        + a label/shipment word are all present), so the more specific
-        test/dry rule needs first look or it would never fire. */
-    {
-        intent: 'test_print_remaining_labels',
-        groups: [
-            ['test', 'dry'],
-            ['print'],
-            ['remaining', 'left', 'outstanding', 'unprinted'],
-            ['label', 'labels', 'shipment', 'shipments'],
-        ],
-    },
-    /* Listed before 'help' on purpose -- it requires every one of three
-        groups to match, so it's the more specific rule and should get first
-        look at a message that happens to contain "help" too (e.g. "can you
-        help print the remaining labels"). This is the REAL print -- it
-        actually sends labels to the physical printer. */
-    {
-        intent: 'print_remaining_labels',
-        groups: [
-            ['print'],
-            ['remaining', 'left', 'outstanding', 'unprinted'],
-            ['label', 'labels', 'shipment', 'shipments'],
-        ],
-    },
-    /* Must come before 'print_specific_skus' for the same reason as
-        test_print_remaining_labels above -- "test print sku X from Y
-        shipment" satisfies that rule's groups too. No shipment-word group
-        here on purpose: a message missing "from ... shipment" entirely
-        (e.g. "test print sku X") should still reach this intent so
-        parseSkuPrintCommand's own usage-error message fires, instead of
-        falling all the way to the generic 'unknown' fallback just because
-        the word "shipment" itself never appeared. */
-    {
-        intent: 'test_print_specific_skus',
-        groups: [
-            ['test', 'dry'],
-            ['print'],
-            ['sku', 'skus'],
-        ],
-    },
-    /* A targeted reprint of specific SKUs (see slack_bot.js's
-        handlePrintSpecificSkus) -- bypasses the unprinted/checked-in filter
-        on purpose, since the point is reprinting something outside it (e.g.
-        a damaged label). Doesn't overlap with print_remaining_labels above
-        (no remaining/left/outstanding/unprinted word here), so order
-        relative to that rule doesn't matter, only relative to its own test
-        variant just above. Same no-shipment-word reasoning as that rule. */
-    {
-        intent: 'print_specific_skus',
-        groups: [
-            ['print'],
-            ['sku', 'skus'],
-        ],
-    },
-    /* Also listed before 'help' for the same reason -- "can you help check
-        the status of the august 21 shipment" should resolve to this, not
-        help. Doesn't require 'print' (or an authorized user) since it's
-        read-only. */
-    {
-        intent: 'query_shipment_status',
-        groups: [
-            ['status', 'check', 'query', 'lookup', 'find'],
-            ['shipment', 'shipments'],
-        ],
-    },
-    {
-        intent: 'help',
-        groups: [['help', 'commands', 'usage']],
-    },
+if (!ANTHROPIC_API_KEY) {
+    console.error('Missing ANTHROPIC_API_KEY environment variable. Set it in .env (see .env.example).');
+    process.exit(1);
+}
+
+const client = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
+
+/* LLM-based intent classification: a forced tool call to Claude does both
+    classification and entity extraction in one request. This used to be one
+    of two swappable implementations (a keyword-matching rule-based path was
+    the other), selected via an INTENT_PARSER env var. That path was removed
+    -- its regex/keyword-group grammar didn't scale to structured per-item
+    data (e.g. a SKU's requested print quantity), it doubled the design and
+    testing work for every new command, and the one place determinism
+    actually mattered for physical-print safety -- the confirm/cancel gate
+    in handlers/print_confirmation.js -- runs before intent parsing even
+    starts and never depended on which parser produced the pending print.
+    The remaining cost of LLM-only classification is a hard dependency on
+    ANTHROPIC_API_KEY and the Anthropic API being reachable; see
+    parseIntent's 'parser_error' result for how that failure is surfaced. */
+const KNOWN_INTENTS = [
+    'print_remaining_labels',
+    'test_print_remaining_labels',
+    'print_specific_skus',
+    'test_print_specific_skus',
+    'query_shipment_status',
+    'help',
 ];
-
 
 /* Disambiguates two failure modes seen in live testing where the model,
     given only the bare schema below with no domain context, would get
@@ -120,8 +66,7 @@ const tool = {
         properties: {
             intent: {
                 type: "string",
-                /* ... spread operator unpacks the array so no nested arrays happen. */
-                enum: [...INTENT_RULES.map(rule => rule.intent), 'unknown']
+                enum: [...KNOWN_INTENTS, 'unknown']
             },
             skus: {
                 type: "array",
@@ -148,106 +93,55 @@ const tool = {
     }
 };
 
-function tokenize(text) {
-    return text.toLowerCase().match(/[a-z0-9]+/g) || [];
-}
-
-/* Produces the same { skus?, shipmentRef? } shape the LLM path returns
-    from its classify_intent tool call, but via the rule-based path's
-    existing regex extraction -- so slack_bot.js's handlers can consume
-    either path's output identically without knowing which one ran.
-    Only the SKU-targeted intents need SKU parsing; the shipment-name-only
-    intents just pass the raw message through as shipmentRef, since
-    findShipmentTable's own stopword-stripping (shipment_lookup.js)
-    already pulls the name out of it regardless of surrounding command
-    phrasing -- no separate extraction step exists for those today. */
-function extractRuleBasedEntities(intent, text) {
-    if (intent === 'print_specific_skus' || intent === 'test_print_specific_skus') {
-        /* Required lazily, not at module load, so classifying an intent
-            that isn't SKU-specific (e.g. in a standalone unit test) never
-            triggers shipment_lookup.js's own AIRTABLE_API_KEY check. */
-        const { parseSkuPrintCommand } = require('./airtable/shipment_lookup');
-        const parsed = parseSkuPrintCommand(text);
-        return parsed ? { skus: parsed.skus, shipmentRef: parsed.shipmentQuery } : {};
-    }
-
-    if (intent === 'print_remaining_labels' || intent === 'test_print_remaining_labels' || intent === 'query_shipment_status') {
-        return { shipmentRef: text };
-    }
-
-    return {};
-}
-
-/* Returns { intent, skus?, shipmentRef?, confidence? } -- the same shape
-    regardless of which parser produced it, so callers never need to branch
-    on INTENT_PARSER themselves. 'unknown' is an explicit, expected result
-    -- not a failure -- for any message that doesn't satisfy a full rule (or
-    that the LLM couldn't classify); callers should reply with example usage
-    rather than failing silently. 'parser_error' is a different, genuine
-    failure (the LLM call itself didn't complete) -- kept distinct from
-    'unknown' so slack_bot.js can tell a user "I didn't catch a command"
-    apart from "something's actually broken right now", instead of
-    conflating an infrastructure failure with the user having typed
-    something unparseable. The rule-based path has no equivalent failure
-    mode -- it's pure local computation, nothing to catch. */
+/* Returns { intent, skus?, shipmentRef?, confidence? }. 'unknown' is an
+    explicit, expected result -- not a failure -- for any message the model
+    couldn't classify; callers should reply with example usage rather than
+    failing silently. 'parser_error' is a different, genuine failure (the
+    API call itself didn't complete -- network error, rate limit, bad key)
+    -- kept distinct from 'unknown' so slack_bot.js can tell a user "I
+    didn't catch a command" apart from "something's actually broken right
+    now", instead of conflating an infrastructure failure with the user
+    having typed something unparseable. */
 async function parseIntent(text) {
-    if (process.env.INTENT_PARSER == "llm_based") {
-        let claude_response;
-        try {
-            claude_response = await client.messages.create({
-                model: "claude-haiku-4-5",
-                max_tokens: 1024,
-                system: SYSTEM_PROMPT,
-                tools: [tool],
-                tool_choice: { type: "tool", name: "classify_intent"},
-                messages: [
-                    {
-                        role: "user",
-                        content: `${text}`, /* Slack message text */
-                    }
-                ]
-            });
-        } catch (error) {
-            /* Most-specific-first, per the SDK's typed exception classes --
-                distinguishes retryable/operational causes in the logs even
-                though the user-facing outcome (a 'parser_error' intent) is
-                the same for all of them. */
-            if (error instanceof Anthropic.AuthenticationError) {
-                console.error('Intent classification failed: invalid or missing ANTHROPIC_API_KEY.', error.message);
-            } else if (error instanceof Anthropic.RateLimitError) {
-                console.error('Intent classification failed: rate limited by the Anthropic API.', error.message);
-            } else if (error instanceof Anthropic.APIError) {
-                console.error(`Intent classification failed: Anthropic API error (${error.status}).`, error.message);
-            } else {
-                console.error('Intent classification failed:', error.message);
-            }
-            return { intent: 'parser_error' };
+    let claude_response;
+    try {
+        claude_response = await client.messages.create({
+            model: "claude-haiku-4-5",
+            max_tokens: 1024,
+            system: SYSTEM_PROMPT,
+            tools: [tool],
+            tool_choice: { type: "tool", name: "classify_intent"},
+            messages: [
+                {
+                    role: "user",
+                    content: `${text}`, /* Slack message text */
+                }
+            ]
+        });
+    } catch (error) {
+        /* Most-specific-first, per the SDK's typed exception classes --
+            distinguishes retryable/operational causes in the logs even
+            though the user-facing outcome (a 'parser_error' intent) is
+            the same for all of them. */
+        if (error instanceof Anthropic.AuthenticationError) {
+            console.error('Intent classification failed: invalid or missing ANTHROPIC_API_KEY.', error.message);
+        } else if (error instanceof Anthropic.RateLimitError) {
+            console.error('Intent classification failed: rate limited by the Anthropic API.', error.message);
+        } else if (error instanceof Anthropic.APIError) {
+            console.error(`Intent classification failed: Anthropic API error (${error.status}).`, error.message);
+        } else {
+            console.error('Intent classification failed:', error.message);
         }
-
-        const output = claude_response.content[0].input;
-        return {
-            intent: output.intent,
-            skus: output.skus,
-            shipmentRef: output.shipment_ref,
-            confidence: output.confidence,
-        };
+        return { intent: 'parser_error' };
     }
 
-    else {
-        const tokens = tokenize(text);
-
-        for (const rule of INTENT_RULES) {
-            const matchesEveryGroup = rule.groups.every((group) =>
-                group.some((word) => tokens.includes(word))
-            );
-
-            if (matchesEveryGroup) {
-                return { intent: rule.intent, ...extractRuleBasedEntities(rule.intent, text) };
-            }
-        }
-
-        return { intent: 'unknown' };
-    }
+    const output = claude_response.content[0].input;
+    return {
+        intent: output.intent,
+        skus: output.skus,
+        shipmentRef: output.shipment_ref,
+        confidence: output.confidence,
+    };
 }
 
 const SHIPMENT_ID_PATTERN = /shipment\s*#?\s*([a-z0-9-]+)/i;
