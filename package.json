@@ -5,11 +5,12 @@
   "main": "slack_bot.js",
   "scripts": {
     "start": "node slack_bot.js",
-    "fetch-remaining-labels": "node fetch_remaining_labels.js"
+    "fetch-remaining-labels": "node airtable/fetch_remaining_labels.js"
   },
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.124.0",
     "@slack/bolt": "^5.0.0",
     "airtable": "^0.12.2",
     "dotenv": "^17.4.2"
