@@ -50,6 +50,8 @@ Two kinds of things can appear in a message, and they never overlap:
 - A SKU is a product identifier made of alphanumeric segments separated by dashes (e.g. "0F-CA35-B7BM", "NL-Y7SI-8FGG"). Put every SKU-shaped token in \`skus\`, never in \`shipment_ref\` -- even when the SKU is the first word of the sentence or reads as its grammatical subject. Example: "NL-Y7SI-8FGG needs a real print, it's from the sept 10 shipment" names exactly one SKU (NL-Y7SI-8FGG, goes in \`skus\`) and one shipment (sept 10, goes in \`shipment_ref\`) -- the SKU coming first in the sentence does not make it the shipment.
 - A shipment reference is a shipment name, date, or the word "current" (e.g. "August 21 Shipment", "sept 10", "current") -- never a SKU-shaped token.
 
+A message may also say how many labels to print for a given SKU (e.g. "print 5 of NL-Y7SI-8FGG", "NL-Y7SI-8FGG x3", "10 labels for NL-Y7SI-8FGG", "AV-4FL8-PKNH:20"). When it does, attach that number as \`quantity\` on that SKU's own entry in \`skus\` -- quantities are per-SKU, not a single number for the whole message, since a request can name several SKUs and only give a quantity for some of them. Never invent or default a quantity: omit the field entirely for a SKU the message doesn't give one for, and let the caller look up its normal quantity separately.
+
 Intent meanings:
 - print_remaining_labels / test_print_remaining_labels: print or dry-run every still-unprinted label for ONE named shipment. Use ONLY when the message names no specific SKU.
 - print_specific_skus / test_print_specific_skus: print or dry-run specific, named SKU(s), regardless of their printed status. Use whenever the message names one or more SKUs, even if it also mentions "remaining" or "left" in passing.
@@ -70,8 +72,21 @@ const tool = {
             },
             skus: {
                 type: "array",
-                items: { type: "string" },
-                description: "SKU identifiers mentioned in the message, if any -- dash-separated alphanumeric product codes (e.g. \"0F-CA35-B7BM\"). Never put one of these in shipment_ref below, even if it appears earlier in the sentence than the shipment name."
+                items: {
+                    type: "object",
+                    properties: {
+                        sku: {
+                            type: "string",
+                            description: "A dash-separated alphanumeric product code (e.g. \"0F-CA35-B7BM\"). Never put one of these in shipment_ref below, even if it appears earlier in the sentence than the shipment name."
+                        },
+                        quantity: {
+                            type: "integer",
+                            description: "How many labels to print for this SKU, only if the message states one for it (e.g. \"print 5 of SKU X\", \"SKU X x3\"). Omit when the message doesn't give a quantity for this SKU -- never guess or default one."
+                        }
+                    },
+                    required: ["sku"]
+                },
+                description: "SKUs mentioned in the message, if any, each with an optional per-SKU print quantity."
             },
             /* Downstream code (shipment_lookup.js's isAllShipmentsQuery) only
                 recognizes an all-shipments request by finding a lone
@@ -93,8 +108,11 @@ const tool = {
     }
 };
 
-/* Returns { intent, skus?, shipmentRef?, confidence? }. 'unknown' is an
-    explicit, expected result -- not a failure -- for any message the model
+/* Returns { intent, skus?, shipmentRef?, confidence? }, where skus (if
+    present) is [{ sku, quantity? }] -- quantity is per-SKU and only present
+    when the message actually specified one; see handlers/print_handlers.js
+    for how a missing quantity falls back to Airtable's own value. 'unknown'
+    is an explicit, expected result -- not a failure -- for any message the model
     couldn't classify; callers should reply with example usage rather than
     failing silently. 'parser_error' is a different, genuine failure (the
     API call itself didn't complete -- network error, rate limit, bad key)

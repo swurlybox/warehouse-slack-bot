@@ -11,12 +11,11 @@ const { setPendingPrint } = require('./print_confirmation');
     shipment: a table like "Next Shipment" gets renamed to a dated name as
     part of the team's normal Airtable workflow, so relying on a fixed
     fallback name broke unpredictably whenever that happened.
-    shipmentRef may be the raw message text (rule-based path, which relies on
-    findShipmentTable's own stopword-stripping to pull the name out of it) or
-    a clean phrase (LLM path) -- either shape works since findShipmentTable
-    tokenizes and matches on leftover words either way. May be undefined
-    (the LLM path can omit shipment_ref entirely), which resolves the same
-    way an empty query already does: 'not_found'. */
+    shipmentRef is whatever the intent parser extracted (see intent_parser.js)
+    -- typically a clean phrase like "sept 10" or "all" -- and findShipmentTable
+    tokenizes and matches on its leftover words. May be undefined (the parser
+    can omit shipment_ref entirely), which resolves the same way an empty
+    query already does: 'not_found'. */
 async function resolveShipmentTableName(shipmentRef) {
     const result = await findShipmentTable(shipmentRef || '');
 
@@ -31,9 +30,7 @@ async function resolveShipmentTableName(shipmentRef) {
     unsupported "all shipments" request, an Airtable lookup error, an
     unresolved/ambiguous name, or a fetch error -- into one result shape so
     both print handlers below can share the same error reporting instead of
-    duplicating it. Takes a structured { shipmentRef } object rather than raw
-    text so both the rule-based and LLM-based intent parsers can call it
-    identically. Exported for status_handlers.js's handleQueryShipmentStatus,
+    duplicating it. Exported for status_handlers.js's handleQueryShipmentStatus,
     which shares this same resolution/error-reporting shape rather than
     duplicating it. */
 async function resolveShipmentAndFetchRemaining({ shipmentRef }) {
@@ -86,21 +83,46 @@ async function sayShipmentResolutionError(result, say, userId, exampleCommand) {
     return false;
 }
 
+/* A caller-specified print quantity has no upper or lower bound checked
+    against Airtable's own expected count (by design -- see
+    handlers/print_confirmation.js's confirmation message, which surfaces an
+    override rather than blocking it), but it still has to be a real,
+    physically-printable count. Anything else (0, negative, a float, a
+    non-number) is treated the same as no quantity being given at all,
+    rather than blocking the whole request over one bad number -- same
+    fail-open-on-this-one-field spirit as SKU_TOKEN_PATTERN filtering out an
+    individual malformed SKU below instead of rejecting the whole message. */
+function isValidQuantity(quantity) {
+    return Number.isInteger(quantity) && quantity > 0;
+}
+
 /* Resolves a "print sku(s) ... from ... shipment" request: takes the
-    already-extracted SKU list and shipment reference (see intent_parser.js),
-    resolves the shipment the same way every other command does, then looks
-    up each named SKU directly (bypassing the remaining-labels filter on
-    purpose -- see fetchLabelsBySkuForTable). Any SKU not found in the
-    resolved table blocks the whole request rather than silently printing a
-    partial list, since a mistyped SKU in a targeted reprint is exactly the
-    kind of thing that shouldn't fail quietly.
-    Re-validates skus against SKU_TOKEN_PATTERN here rather than trusting the
-    LLM's own extraction -- this is what actually stops a malformed SKU from
-    an arbitrarily-phrased message breaking out of fetchLabelsBySkuForTable's
-    formula string. */
+    already-extracted SKU list (each optionally carrying a caller-specified
+    print quantity -- see intent_parser.js) and shipment reference, resolves
+    the shipment the same way every other command does, then looks up each
+    named SKU directly (bypassing the remaining-labels filter on purpose --
+    see fetchLabelsBySkuForTable). Any SKU not found in the resolved table
+    blocks the whole request rather than silently printing a partial list,
+    since a mistyped SKU in a targeted reprint is exactly the kind of thing
+    that shouldn't fail quietly.
+    Re-validates each sku against SKU_TOKEN_PATTERN here rather than trusting
+    the LLM's own extraction -- this is what actually stops a malformed SKU
+    from an arbitrarily-phrased message breaking out of
+    fetchLabelsBySkuForTable's formula string. A caller-specified quantity
+    overrides Airtable's own Labels-formula quantity for that SKU; the
+    original is kept as `originalQuantity` on the returned item (only when
+    it was actually overridden) so callers can flag the override to the user
+    before it reaches the physical printer, same as the alreadyPrinted /
+    notCheckedIn flags below. */
 async function resolveSkuPrintRequest({ skus, shipmentRef }) {
-    const validSkus = (skus || []).filter((sku) => SKU_TOKEN_PATTERN.test(sku));
-    if (validSkus.length === 0 || !shipmentRef) {
+    const requests = (skus || [])
+        .filter((item) => item && SKU_TOKEN_PATTERN.test(item.sku))
+        .map((item) => ({
+            sku: item.sku,
+            requestedQuantity: isValidQuantity(item.quantity) ? item.quantity : undefined,
+        }));
+
+    if (requests.length === 0 || !shipmentRef) {
         return { status: 'parse_error' };
     }
 
@@ -115,7 +137,7 @@ async function resolveSkuPrintRequest({ skus, shipmentRef }) {
 
     let payload;
     try {
-        payload = await fetchLabelsBySkuForTable(resolved.tableName, validSkus);
+        payload = await fetchLabelsBySkuForTable(resolved.tableName, requests.map((r) => r.sku));
     } catch (error) {
         console.error('Failed to fetch labels by SKU:', error.message);
         return { status: 'error', message: error.message };
@@ -126,7 +148,16 @@ async function resolveSkuPrintRequest({ skus, shipmentRef }) {
         return { status: 'sku_not_found', shipment: payload.shipment, notFound };
     }
 
-    return { status: 'ok', shipment: payload.shipment, items: payload.results };
+    const requestedBySku = new Map(requests.map((r) => [r.sku.toUpperCase(), r.requestedQuantity]));
+    const items = payload.results.map((item) => {
+        const requestedQuantity = requestedBySku.get(item.sku.toUpperCase());
+        if (requestedQuantity === undefined || requestedQuantity === item.quantity) {
+            return item;
+        }
+        return { ...item, quantity: requestedQuantity, originalQuantity: item.quantity };
+    });
+
+    return { status: 'ok', shipment: payload.shipment, items };
 }
 
 /* Reports resolveSkuPrintRequest's SKU-specific failure modes; falls through
@@ -146,14 +177,18 @@ async function saySkuResolutionError(result, say, userId, exampleCommand) {
     return sayShipmentResolutionError(result, say, userId, exampleCommand);
 }
 
-/* Renders the reprint-safety flags (already printed / not checked in) that
-    make a targeted SKU reprint visibly different from a normal remaining-
-    labels print -- both flags show together when a SKU matches both, since
-    they're independent facts about the row. */
+/* Renders the reprint-safety flags (already printed / not checked in / a
+    caller-specified quantity overriding Airtable's own count) that make a
+    targeted SKU reprint visibly different from a normal remaining-labels
+    print -- any combination shows together, since they're independent facts
+    about the row, and none of them block the request on their own (see
+    resolveSkuPrintRequest) -- they exist so the user knowingly confirms an
+    unusual print rather than one silently happening. */
 function formatSkuFlags(item) {
     const flags = [];
     if (item.alreadyPrinted) flags.push('already printed');
     if (item.notCheckedIn) flags.push('not checked in');
+    if (item.originalQuantity !== undefined) flags.push(`qty overridden from ${item.originalQuantity}`);
     return flags.length ? `  ⚠ ${flags.join(', ')}` : '';
 }
 
