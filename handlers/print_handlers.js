@@ -397,7 +397,7 @@ async function handleProductNameSearch({ productQuery, shipmentRef }, say, userI
 
     setPendingProductSelection(userId, { shipment: result.shipment, isTest, candidates: result.candidates });
 
-    await say(`<@${userId}> Found ${result.candidates.length} match(es) in "${result.shipment}" for "${productQuery}":\n${formatProductCandidateList(result.candidates)}\nReply with a number to pick one (e.g. "1"), multiple separated by commas (e.g. "1, 3"), optionally with a quantity override (e.g. "1 x5"). Expires in 2 minutes.`);
+    await say(`<@${userId}> Found ${result.candidates.length} match(es) in "${result.shipment}" for "${productQuery}":\n${formatProductCandidateList(result.candidates)}\nReply with a number to pick one (e.g. "1"), multiple separated by commas (e.g. "1, 3"), optionally with a quantity override (e.g. "1 x5") -- or *cancel* to back out. Expires in 2 minutes.`);
 }
 
 /* Searches for a product by name within a shipment and shows the ranked
