@@ -7,6 +7,20 @@
 const pendingProductSelections = new Map();
 const PENDING_SELECTION_TIMEOUT_MS = 2 * 60 * 1000;
 
+/* Mirrors print_confirmation.js's cancel-word handling exactly (same word
+    list, same "anywhere in the message" matching) -- so replying "cancel"
+    (or "nevermind", "stop", etc.) clears a pending selection immediately
+    instead of making the user wait out the TTL. */
+const SELECTION_CANCEL_WORDS = new Set(['no', 'n', 'cancel', 'stop', 'nevermind', 'abort']);
+
+function tokenize(text) {
+    return text.toLowerCase().match(/[a-z0-9]+/g) || [];
+}
+
+function isSelectionCancellation(text) {
+    return tokenize(text).some((token) => SELECTION_CANCEL_WORDS.has(token));
+}
+
 /* candidates is [{ sku, productName }], in the order they were shown
     (1-based position = array index + 1) -- isTest records which print
     handler the eventual selection should hand off to. */
@@ -48,10 +62,11 @@ function parseSelectionReply(text) {
 
 /* Checked before normal intent routing on every message, same as
     handlePendingPrintConfirmation. Returns true if this message was
-    consumed as a selection reply (caller should stop routing), false
-    otherwise (fall through to parseIntent as usual -- including when a
-    pending selection existed but expired, or the message didn't parse as
-    a selection at all).
+    consumed -- either as a cancellation or a valid/invalid selection reply
+    (caller should stop routing either way) -- false otherwise (fall
+    through to parseIntent as usual -- including when a pending selection
+    existed but expired, or the message didn't parse as a selection or a
+    cancellation at all).
     onSelect receives the resolved { shipment, isTest, items: [{sku,
     quantity?}] } and does the actual print handoff -- passed in by the
     caller (slack_bot.js) rather than required directly here, so this
@@ -66,6 +81,12 @@ async function handlePendingProductSelection(text, userId, say, onSelect) {
     if (Date.now() > pending.expiresAt) {
         pendingProductSelections.delete(userId);
         return false;
+    }
+
+    if (isSelectionCancellation(text)) {
+        pendingProductSelections.delete(userId);
+        await say(`<@${userId}> Cancelled -- nothing selected.`);
+        return true;
     }
 
     const parsedSelection = parseSelectionReply(text);
