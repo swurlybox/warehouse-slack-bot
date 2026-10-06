@@ -350,7 +350,7 @@ async function resolveProductNameMatches({ productQuery, shipmentRef }) {
         .map((match) => bySku.get((match.sku || '').toUpperCase()))
         .filter(Boolean)
         .slice(0, MAX_PRODUCT_CANDIDATES_SHOWN)
-        .map(({ sku, productName }) => ({ sku, productName }));
+        .map(({ sku, productName, quantity }) => ({ sku, productName, quantity }));
 
     if (candidates.length === 0) {
         return { status: 'no_matches', shipment: payload.shipment, query: productQuery };
@@ -378,8 +378,21 @@ async function sayProductMatchError(result, say, userId, exampleCommand) {
     return sayShipmentResolutionError(result, say, userId, exampleCommand);
 }
 
+/* Product names here run long (real examples are 80-150+ characters), so
+    the SKU and default quantity always go on their own indented line
+    rather than being crammed onto the end of the name line -- consistent
+    wrapping reads better than only wrapping the occasional short one.
+    The quantity shown is Airtable's default at search time, not
+    necessarily final -- resolveSkuPrintRequest re-fetches it fresh (and
+    an explicit "x<N>" at selection time overrides it); labeling it
+    "Default qty" here keeps that relationship clear rather than implying
+    it's locked in. Omitted entirely for a row with no valid Labels value
+    rather than printing a misleading "qty: null". */
 function formatProductCandidateList(candidates) {
-    return candidates.map((candidate, i) => `${i + 1}. ${candidate.productName} — ${candidate.sku}`).join('\n');
+    return candidates.map((candidate, i) => {
+        const qtyPart = Number.isFinite(candidate.quantity) ? ` · Default qty *${candidate.quantity}*` : '';
+        return `${i + 1}. ${candidate.productName}\n   SKU *${candidate.sku}*${qtyPart}`;
+    }).join('\n');
 }
 
 /* Shared by handlePrintByProductName/handleTestPrintByProductName: shows

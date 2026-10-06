@@ -110,24 +110,30 @@ async function fetchLabelsBySkuForTable(tableName, skus) {
 const PRODUCT_NAME_FIELD = 'Name. 名字. Nombre. 2';
 
 /* Fetches every SKU in a shipment table paired with its human-readable
-    product name, for fuzzy name-based matching (see
-    handlers/print_handlers.js's resolveProductNameMatches). Deliberately
-    doesn't fetch Labels/Label Printed/Checked In here -- once the user
-    picks a specific SKU from the ranked candidates this surfaces, that
-    data gets fetched fresh via fetchLabelsBySkuForTable, the same as any
-    other targeted-SKU print, so this stays a light, name-only lookup.
+    product name and default print quantity, for fuzzy name-based matching
+    and display (see handlers/print_handlers.js's resolveProductNameMatches
+    and formatProductCandidateList). Labels comes along for free -- the
+    table is already being fully paginated for name-matching, so there's
+    no extra request for it. Deliberately still doesn't fetch Label
+    Printed/Checked In here -- that data (and the authoritative quantity,
+    re-checked in case anything changed) gets fetched fresh via
+    fetchLabelsBySkuForTable once the user actually picks a SKU, the same
+    as any other targeted-SKU print; the quantity shown here is only ever
+    a preview.
     Rows with no name at all -- the field is missing on this table
     entirely, or just this row's catalog link isn't populated -- are
     dropped rather than surfaced as an unmatchable candidate. If every row
     comes back empty, the table simply doesn't support name-based search;
     callers should treat that as a distinct case; it's not "no products in
-    this shipment". */
+    this shipment". A row missing a valid Labels value still counts as a
+    candidate (quantity comes back null) -- that's purely a display gap,
+    not a reason to exclude it from matching. */
 async function fetchProductNamesForTable(tableName) {
     const items = [];
 
     await base(tableName)
         .select({
-            fields: ['SKU', PRODUCT_NAME_FIELD],
+            fields: ['SKU', PRODUCT_NAME_FIELD, 'Labels'],
         })
         .eachPage((records, fetchNextPage) => {
             for (const record of records) {
@@ -139,7 +145,8 @@ async function fetchProductNamesForTable(tableName) {
                     continue;
                 }
 
-                items.push({ sku, productName });
+                const quantity = record.get('Labels');
+                items.push({ sku, productName, quantity: Number.isFinite(quantity) ? quantity : null });
             }
             fetchNextPage();
         });
