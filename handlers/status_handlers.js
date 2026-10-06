@@ -3,7 +3,7 @@ const { isAllShipmentsQuery, fetchRemainingLabelsForAllShipments } = require('..
     rather than duplicating them -- status and print commands share the same
     "which shipment, what's remaining" logic, they just do different things
     with the result. */
-const { resolveShipmentAndFetchRemaining, sayShipmentResolutionError } = require('./print_handlers');
+const { resolveShipmentAndFetchRemaining, sayShipmentResolutionError, sayDisambiguationNoteIfAny } = require('./print_handlers');
 
 /* Reports remaining-label counts across every known shipment table (paced
     one Airtable request at a time -- see fetchRemainingLabelsForAllShipments
@@ -58,6 +58,7 @@ async function handleQueryShipmentStatus({ shipmentRef }, say, userId) {
     if (await sayShipmentResolutionError(result, say, userId, 'check status of the august 21 shipment')) {
         return;
     }
+    await sayDisambiguationNoteIfAny(result, say, userId);
 
     if (result.items.length === 0) {
         await say(`<@${userId}> "${result.shipment}" has no remaining labels to print -- everything's already printed.`);

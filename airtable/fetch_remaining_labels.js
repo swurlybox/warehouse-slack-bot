@@ -154,6 +154,24 @@ async function fetchProductNamesForTable(tableName) {
     return { shipment: tableName, items };
 }
 
+/* Returns the createdTime (a Date) of an arbitrary record in the table, as
+    a cheap proxy for "when was this shipment set up" -- used by
+    shipment_lookup.js to break ties when more than one shipment table
+    matches a name query. Airtable's metadata API doesn't expose a
+    table-level creation date at all; a record's own createdTime is the
+    closest real signal available, and unlike a shipment table's name
+    (which never includes a year, e.g. "Oct 2 Shipment"), it carries the
+    actual year -- which is exactly what distinguishes two same-looking
+    shipment names from different years. Returns null for an empty table
+    (nothing to sample). */
+async function getTableCreatedTime(tableName) {
+    const records = await base(tableName).select({ maxRecords: 1 }).firstPage();
+    if (records.length === 0) {
+        return null;
+    }
+    return new Date(records[0]._rawJson.createdTime);
+}
+
 /* Only run as a CLI script when invoked directly (`node fetch_remaining_labels.js`
     or `npm run fetch-remaining-labels`) -- when required as a module (e.g. by
     slack_bot.js) this just exports the function below. */
@@ -168,4 +186,4 @@ if (require.main === module) {
         });
 }
 
-module.exports = { fetchRemainingLabels, fetchRemainingLabelsForTable, fetchLabelsBySkuForTable, fetchProductNamesForTable };
+module.exports = { fetchRemainingLabels, fetchRemainingLabelsForTable, fetchLabelsBySkuForTable, fetchProductNamesForTable, getTableCreatedTime };

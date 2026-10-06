@@ -1,5 +1,6 @@
 require('dotenv').config();
-const { fetchRemainingLabelsForTable } = require('./fetch_remaining_labels');
+const { fetchRemainingLabelsForTable, getTableCreatedTime } = require('./fetch_remaining_labels');
+const { matchShipmentName } = require('../shipment_matching');
 
 const AIRTABLE_API_KEY = process.env.AIRTABLE_API_KEY;
 const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID || 'app5sCWXMPQpuJodj';
@@ -87,33 +88,6 @@ function isAllShipmentsQuery(text) {
     return tokens.length > 0 && tokens.every((token) => ALL_SHIPMENTS_WORDS.has(token));
 }
 
-/* Matches the meaningful words left in the user's message against known
-    shipment table names, requiring every one of the user's words to appear
-    somewhere in a table's name (e.g. ["august", "21"] matches "August 21
-    Shipment"). Returns 'ok' with a single table, 'ambiguous' with every
-    table that matched, or 'not_found' when nothing did (including when the
-    user gave no usable words at all, e.g. just "check shipment"). */
-async function findShipmentTable(text) {
-    const queryTokens = extractShipmentQueryTokens(text);
-    if (queryTokens.length === 0) {
-        return { status: 'not_found', queryTokens };
-    }
-
-    const tables = await listShipmentTables();
-    const matches = tables.filter((table) => {
-        const tableTokens = tokenize(table.name);
-        return queryTokens.every((token) => tableTokens.includes(token));
-    });
-
-    if (matches.length === 1) {
-        return { status: 'ok', table: matches[0] };
-    }
-    if (matches.length > 1) {
-        return { status: 'ambiguous', matches };
-    }
-    return { status: 'not_found', queryTokens };
-}
-
 /* Airtable enforces 5 requests/sec per base; this keeps a sequential
     all-shipments query comfortably under that (~4.5 req/sec) instead of
     firing one request per table in parallel. The official `airtable` client
@@ -124,6 +98,104 @@ const AIRTABLE_MIN_REQUEST_INTERVAL_MS = 220;
 
 function delay(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/* Picks the newest of several candidate tables by sampling one record's
+    createdTime from each (see fetch_remaining_labels.js's
+    getTableCreatedTime for why that's the signal used, not the table
+    name). A candidate that errors or has no records at all sorts last
+    rather than aborting the comparison -- one flaky lookup shouldn't break
+    resolving an otherwise-clear winner. Returns null only if every
+    candidate came back with no usable signal at all, in which case the
+    caller falls back to asking the user to disambiguate. */
+async function pickNewestTable(tables) {
+    let newest = null;
+    let newestTime = -Infinity;
+
+    for (const table of tables) {
+        let createdTime = null;
+        try {
+            createdTime = await getTableCreatedTime(table.name);
+        } catch (error) {
+            console.error(`Failed to check creation time for "${table.name}":`, error.message);
+        }
+
+        const time = createdTime ? createdTime.getTime() : -Infinity;
+        if (time > newestTime) {
+            newestTime = time;
+            newest = table;
+        }
+        await delay(AIRTABLE_MIN_REQUEST_INTERVAL_MS);
+    }
+
+    return newest;
+}
+
+function buildDisambiguationNote(matches, winner) {
+    const names = matches.map((table) => `"${table.name}"`).join(', ');
+    return `Multiple shipments matched: ${names}. Using the most recent: "${winner.name}".`;
+}
+
+/* Matches the meaningful words left in the user's message against known
+    shipment table names first, requiring every one of the user's words to
+    appear somewhere in a table's name (e.g. ["august", "21"] matches
+    "August 21 Shipment") -- cheap, deterministic, and handles the common
+    well-formed case (e.g. "sept 10") for free, with no LLM call at all.
+    Only if that finds nothing at all does it fall back to an LLM-based
+    match (shipment_matching.js) over the same never-invent-a-name
+    discipline used for SKU and product-name matching elsewhere in this
+    bot -- shipment naming mixes abbreviated and full month names
+    inconsistently, and (see "Oct 2 Shipment" vs. "October 2 Shipment")
+    two genuinely different shipments can have confusingly similar names,
+    so this needs real judgment rather than a hardcoded abbreviation map.
+    Either path can turn up more than one plausible table; when it does,
+    recency breaks the tie (pickNewestTable) instead of asking the user to
+    disambiguate -- the returned 'ok' result carries a `note` in that case
+    so callers can tell the user what was picked and why.
+    Returns 'ok' (optionally with `note`), 'ambiguous' only if recency
+    tie-break itself couldn't produce a winner (every candidate had no
+    usable signal -- shouldn't normally happen), or 'not_found' when
+    nothing matched either way. */
+async function findShipmentTable(text) {
+    const queryTokens = extractShipmentQueryTokens(text);
+    const tables = await listShipmentTables();
+
+    let matches = queryTokens.length > 0
+        ? tables.filter((table) => {
+            const tableTokens = tokenize(table.name);
+            return queryTokens.every((token) => tableTokens.includes(token));
+        })
+        : [];
+
+    /* Gated on queryTokens, not the raw text -- "current" (or any other
+        pure-filler message) has non-empty raw text but zero meaningful
+        tokens once STOPWORDS strips it, and must still resolve straight to
+        'not_found' with no LLM call at all, exactly as before: there is
+        deliberately no default shipment (see extractShipmentQueryTokens'
+        own docstring above), and that has to hold regardless of which
+        matching path is asked to resolve it. */
+    if (matches.length === 0 && queryTokens.length > 0) {
+        const ranked = await matchShipmentName(text, tables.map((table) => table.name));
+        if (!ranked.error && ranked.matches.length > 0) {
+            const byName = new Map(tables.map((table) => [table.name.toLowerCase(), table]));
+            matches = ranked.matches
+                .map((name) => byName.get((name || '').toLowerCase()))
+                .filter(Boolean);
+        }
+    }
+
+    if (matches.length === 0) {
+        return { status: 'not_found', queryTokens };
+    }
+    if (matches.length === 1) {
+        return { status: 'ok', table: matches[0] };
+    }
+
+    const winner = await pickNewestTable(matches);
+    if (!winner) {
+        return { status: 'ambiguous', matches };
+    }
+    return { status: 'ok', table: winner, note: buildDisambiguationNote(matches, winner) };
 }
 
 /* Fetches remaining-label data for every known shipment table, one at a

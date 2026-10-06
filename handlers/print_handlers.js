@@ -22,9 +22,21 @@ async function resolveShipmentTableName(shipmentRef) {
     const result = await findShipmentTable(shipmentRef || '');
 
     if (result.status === 'ok') {
-        return { status: 'ok', tableName: result.table.name };
+        return { status: 'ok', tableName: result.table.name, note: result.note };
     }
     return result;
+}
+
+/* Surfaces findShipmentTable's disambiguation note (set when more than one
+    shipment matched and recency tie-break picked a winner instead of
+    asking the user to clarify -- see airtable/shipment_lookup.js) right
+    before a handler's main reply. A no-op when there's nothing to say, so
+    every handler below can call this unconditionally after its own
+    resolution succeeds. */
+async function sayDisambiguationNoteIfAny(result, say, userId) {
+    if (result.note) {
+        await say(`<@${userId}> ${result.note}`);
+    }
 }
 
 /* Resolves the shipment a print/test-print command names (or defaults to)
@@ -51,7 +63,7 @@ async function resolveShipmentAndFetchRemaining({ shipmentRef }) {
 
     try {
         const payload = await fetchRemainingLabelsForTable(resolved.tableName);
-        return { status: 'ok', shipment: payload.shipment, items: payload.items };
+        return { status: 'ok', shipment: payload.shipment, items: payload.items, note: resolved.note };
     } catch (error) {
         console.error('Failed to fetch remaining labels:', error.message);
         return { status: 'error', message: error.message };
@@ -159,7 +171,7 @@ async function resolveSkuPrintRequest({ skus, shipmentRef }) {
         return { ...item, quantity: requestedQuantity, originalQuantity: item.quantity };
     });
 
-    return { status: 'ok', shipment: payload.shipment, items };
+    return { status: 'ok', shipment: payload.shipment, items, note: resolved.note };
 }
 
 /* Reports resolveSkuPrintRequest's SKU-specific failure modes; falls through
@@ -202,6 +214,7 @@ async function handleTestPrintRemainingLabels({ shipmentRef }, say, userId) {
     if (await sayShipmentResolutionError(result, say, userId, 'test print remaining labels for the august 21 shipment')) {
         return;
     }
+    await sayDisambiguationNoteIfAny(result, say, userId);
 
     if (result.items.length === 0) {
         await say(`<@${userId}> No remaining labels to test-print for "${result.shipment}" -- everything's already printed.`);
@@ -232,6 +245,7 @@ async function handlePrintRemainingLabels({ shipmentRef }, say, userId) {
     if (await sayShipmentResolutionError(result, say, userId, 'print remaining labels for the august 21 shipment')) {
         return;
     }
+    await sayDisambiguationNoteIfAny(result, say, userId);
 
     if (result.items.length === 0) {
         await say(`<@${userId}> No remaining labels to print for "${result.shipment}" -- everything's already printed.`);
@@ -255,6 +269,7 @@ async function handleTestPrintSpecificSkus({ skus, shipmentRef }, say, userId) {
     if (await saySkuResolutionError(result, say, userId, exampleCommand)) {
         return;
     }
+    await sayDisambiguationNoteIfAny(result, say, userId);
 
     const lines = result.items.map((item) => `• ${item.sku} — ${item.quantity}${formatSkuFlags(item)}`).join('\n');
     await say(`<@${userId}> [Test print -- nothing physical] Found ${result.items.length} SKU(s) for "${result.shipment}":\n${lines}`);
@@ -279,6 +294,7 @@ async function handlePrintSpecificSkus({ skus, shipmentRef }, say, userId) {
     if (await saySkuResolutionError(result, say, userId, exampleCommand)) {
         return;
     }
+    await sayDisambiguationNoteIfAny(result, say, userId);
 
     setPendingPrint(userId, {
         shipment: result.shipment,
@@ -325,14 +341,14 @@ async function resolveProductNameMatches({ productQuery, shipmentRef }) {
             "couldn't look up shipment tables" would be misleading, since
             the shipment itself was found fine. */
         if (error.error === 'UNKNOWN_FIELD_NAME') {
-            return { status: 'no_names_available', shipment: resolved.tableName };
+            return { status: 'no_names_available', shipment: resolved.tableName, note: resolved.note };
         }
         console.error('Failed to fetch product names:', error.message);
         return { status: 'error', message: error.message };
     }
 
     if (payload.items.length === 0) {
-        return { status: 'no_names_available', shipment: payload.shipment };
+        return { status: 'no_names_available', shipment: payload.shipment, note: resolved.note };
     }
 
     const ranked = await rankProductMatches(productQuery, payload.items);
@@ -356,7 +372,7 @@ async function resolveProductNameMatches({ productQuery, shipmentRef }) {
         return { status: 'no_matches', shipment: payload.shipment, query: productQuery };
     }
 
-    return { status: 'ok', shipment: payload.shipment, candidates };
+    return { status: 'ok', shipment: payload.shipment, candidates, note: resolved.note };
 }
 
 /* Reports resolveProductNameMatches' own failure modes; falls through to
@@ -368,6 +384,7 @@ async function sayProductMatchError(result, say, userId, exampleCommand) {
         return true;
     }
     if (result.status === 'no_names_available') {
+        await sayDisambiguationNoteIfAny(result, say, userId);
         await say(`<@${userId}> "${result.shipment}" doesn't support searching by product name (it predates that data) -- try naming the SKU directly instead.`);
         return true;
     }
@@ -408,6 +425,7 @@ async function handleProductNameSearch({ productQuery, shipmentRef }, say, userI
         return;
     }
 
+    await sayDisambiguationNoteIfAny(result, say, userId);
     setPendingProductSelection(userId, { shipment: result.shipment, isTest, candidates: result.candidates });
 
     await say(`<@${userId}> Found ${result.candidates.length} match(es) in "${result.shipment}" for "${productQuery}":\n${formatProductCandidateList(result.candidates)}\nReply with a number to pick one (e.g. "1"), multiple separated by commas (e.g. "1, 3"), optionally with a quantity override (e.g. "1 x5") -- or *cancel* to back out. Expires in 2 minutes.`);
@@ -448,4 +466,5 @@ module.exports = {
     handleResolvedProductSelection,
     resolveShipmentAndFetchRemaining,
     sayShipmentResolutionError,
+    sayDisambiguationNoteIfAny,
 };
