@@ -109,14 +109,33 @@ async function fetchLabelsBySkuForTable(tableName, skus) {
     returns it as an array even though the link is to one record. */
 const PRODUCT_NAME_FIELD = 'Name. 名字. Nombre. 2';
 
+/* Same lookup pattern as PRODUCT_NAME_FIELD (pulled in from the master
+    catalog table's own Image attachment field), with the same caveats --
+    missing entirely on a handful of older shipment tables, and a
+    multipleLookupValues field, so it comes back as an array of Airtable
+    attachment objects (each with .url and .thumbnails.{small,large,full}.url)
+    even though there's normally just one. */
+const PRODUCT_IMAGE_FIELD = 'Image，图片 (from Product Name Lookup)';
+
+/* An attachment's own `url` is a full-resolution original (e.g. 1500px on
+    the long edge) -- too large for a quick visual check in a Slack
+    thumbnail and wasteful to transfer for that purpose. `large` (~512px)
+    is plenty to confirm "does this look like the right product" at a
+    glance; falls back down the chain for an attachment missing that
+    particular thumbnail size rather than showing nothing. */
+function pickThumbnailUrl(attachment) {
+    return attachment?.thumbnails?.large?.url || attachment?.thumbnails?.small?.url || attachment?.url || null;
+}
+
 /* Fetches every SKU in a shipment table paired with its human-readable
-    product name and default print quantity, for fuzzy name-based matching
-    and display (see handlers/print_handlers.js's resolveProductNameMatches
-    and formatProductCandidateList). Labels comes along for free -- the
-    table is already being fully paginated for name-matching, so there's
-    no extra request for it. Deliberately still doesn't fetch Label
-    Printed/Checked In here -- that data (and the authoritative quantity,
-    re-checked in case anything changed) gets fetched fresh via
+    product name, default print quantity, and a thumbnail image URL, for
+    fuzzy name-based matching and display (see
+    handlers/print_handlers.js's resolveProductNameMatches and
+    formatProductCandidateList). Labels and the image come along for free
+    -- the table is already being fully paginated for name-matching, so
+    there's no extra request for either. Deliberately still doesn't fetch
+    Label Printed/Checked In here -- that data (and the authoritative
+    quantity, re-checked in case anything changed) gets fetched fresh via
     fetchLabelsBySkuForTable once the user actually picks a SKU, the same
     as any other targeted-SKU print; the quantity shown here is only ever
     a preview.
@@ -125,15 +144,15 @@ const PRODUCT_NAME_FIELD = 'Name. 名字. Nombre. 2';
     dropped rather than surfaced as an unmatchable candidate. If every row
     comes back empty, the table simply doesn't support name-based search;
     callers should treat that as a distinct case; it's not "no products in
-    this shipment". A row missing a valid Labels value still counts as a
-    candidate (quantity comes back null) -- that's purely a display gap,
-    not a reason to exclude it from matching. */
+    this shipment". A row missing a valid Labels value or an image still
+    counts as a candidate (quantity/imageUrl come back null) -- those are
+    purely display gaps, not a reason to exclude it from matching. */
 async function fetchProductNamesForTable(tableName) {
     const items = [];
 
     await base(tableName)
         .select({
-            fields: ['SKU', PRODUCT_NAME_FIELD, 'Labels'],
+            fields: ['SKU', PRODUCT_NAME_FIELD, 'Labels', PRODUCT_IMAGE_FIELD],
         })
         .eachPage((records, fetchNextPage) => {
             for (const record of records) {
@@ -146,7 +165,15 @@ async function fetchProductNamesForTable(tableName) {
                 }
 
                 const quantity = record.get('Labels');
-                items.push({ sku, productName, quantity: Number.isFinite(quantity) ? quantity : null });
+                const imageLookup = record.get(PRODUCT_IMAGE_FIELD);
+                const imageUrl = Array.isArray(imageLookup) && imageLookup.length > 0 ? pickThumbnailUrl(imageLookup[0]) : null;
+
+                items.push({
+                    sku,
+                    productName,
+                    quantity: Number.isFinite(quantity) ? quantity : null,
+                    imageUrl,
+                });
             }
             fetchNextPage();
         });

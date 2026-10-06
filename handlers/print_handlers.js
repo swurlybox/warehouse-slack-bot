@@ -350,7 +350,7 @@ async function resolveProductNameMatches({ productQuery, shipmentRef }) {
         .map((match) => bySku.get((match.sku || '').toUpperCase()))
         .filter(Boolean)
         .slice(0, MAX_PRODUCT_CANDIDATES_SHOWN)
-        .map(({ sku, productName, quantity }) => ({ sku, productName, quantity }));
+        .map(({ sku, productName, quantity, imageUrl }) => ({ sku, productName, quantity, imageUrl }));
 
     if (candidates.length === 0) {
         return { status: 'no_matches', shipment: payload.shipment, query: productQuery };
@@ -378,7 +378,15 @@ async function sayProductMatchError(result, say, userId, exampleCommand) {
     return sayShipmentResolutionError(result, say, userId, exampleCommand);
 }
 
-/* Product names here run long (real examples are 80-150+ characters), so
+/* Builds the Slack Block Kit message for a ranked candidate list -- the
+    first time this bot sends anything beyond a plain string, needed so
+    each product's thumbnail can sit next to its name/SKU/quantity via
+    Block Kit's section "accessory" image, letting the user visually
+    confirm the product before picking it. A candidate missing an image
+    (its catalog row has none, or this table predates the lookup field)
+    just gets a plain section with no accessory, rather than a
+    broken/missing-image block.
+    Product names here run long (real examples are 80-150+ characters), so
     the SKU and default quantity always go on their own indented line
     rather than being crammed onto the end of the name line -- consistent
     wrapping reads better than only wrapping the occasional short one.
@@ -387,12 +395,36 @@ async function sayProductMatchError(result, say, userId, exampleCommand) {
     an explicit "x<N>" at selection time overrides it); labeling it
     "Default qty" here keeps that relationship clear rather than implying
     it's locked in. Omitted entirely for a row with no valid Labels value
-    rather than printing a misleading "qty: null". */
-function formatProductCandidateList(candidates) {
-    return candidates.map((candidate, i) => {
+    rather than printing a misleading "qty: null".
+    `text` is the required plain-text fallback (notification previews, and
+    any client that can't render blocks) -- same information as the
+    blocks, just without images. */
+function buildProductCandidateBlocks({ userId, shipment, query, candidates }) {
+    const summaryLines = candidates.map((candidate, i) => {
+        const qtyPart = Number.isFinite(candidate.quantity) ? `, default qty ${candidate.quantity}` : '';
+        return `${i + 1}. ${candidate.productName} -- SKU ${candidate.sku}${qtyPart}`;
+    });
+    const text = `<@${userId}> Found ${candidates.length} match(es) in "${shipment}" for "${query}":\n${summaryLines.join('\n')}`;
+
+    const candidateBlocks = candidates.map((candidate, i) => {
         const qtyPart = Number.isFinite(candidate.quantity) ? ` · Default qty *${candidate.quantity}*` : '';
-        return `${i + 1}. ${candidate.productName}\n   SKU *${candidate.sku}*${qtyPart}`;
-    }).join('\n');
+        const block = {
+            type: 'section',
+            text: { type: 'mrkdwn', text: `${i + 1}. ${candidate.productName}\n   SKU *${candidate.sku}*${qtyPart}` },
+        };
+        if (candidate.imageUrl) {
+            block.accessory = { type: 'image', image_url: candidate.imageUrl, alt_text: candidate.productName.slice(0, 2000) };
+        }
+        return block;
+    });
+
+    const blocks = [
+        { type: 'section', text: { type: 'mrkdwn', text: `<@${userId}> Found *${candidates.length}* match(es) in "${shipment}" for "${query}":` } },
+        ...candidateBlocks,
+        { type: 'section', text: { type: 'mrkdwn', text: 'Reply with a number to pick one (e.g. "1"), multiple separated by commas (e.g. "1, 3"), optionally with a quantity override (e.g. "1 x5") -- or *cancel* to back out. Expires in 2 minutes.' } },
+    ];
+
+    return { text, blocks };
 }
 
 /* Shared by handlePrintByProductName/handleTestPrintByProductName: shows
@@ -410,7 +442,8 @@ async function handleProductNameSearch({ productQuery, shipmentRef }, say, userI
 
     setPendingProductSelection(userId, { shipment: result.shipment, isTest, candidates: result.candidates });
 
-    await say(`<@${userId}> Found ${result.candidates.length} match(es) in "${result.shipment}" for "${productQuery}":\n${formatProductCandidateList(result.candidates)}\nReply with a number to pick one (e.g. "1"), multiple separated by commas (e.g. "1, 3"), optionally with a quantity override (e.g. "1 x5") -- or *cancel* to back out. Expires in 2 minutes.`);
+    const { text, blocks } = buildProductCandidateBlocks({ userId, shipment: result.shipment, query: productQuery, candidates: result.candidates });
+    await say({ text, blocks });
 }
 
 /* Searches for a product by name within a shipment and shows the ranked
