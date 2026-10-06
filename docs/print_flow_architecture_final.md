@@ -66,6 +66,8 @@ Typical workflow:
 - `check status of all shipments`
 - `help`
 
+The `sku(s)` commands above also accept an optional per-SKU print quantity, e.g. *"print 5 of SKU X"* or *"SKU X x3"*. This overrides Airtable's own expected label count for that SKU — there's no cap on the requested number, but the confirmation message flags it as overridden (the same way it already flags a SKU that's already printed or not checked in) so nothing prints without the override being visibly confirmed first. Leave the quantity out and the SKU's normal Airtable count is used, same as before.
+
 ---
 
 ## Setup / Configuration
