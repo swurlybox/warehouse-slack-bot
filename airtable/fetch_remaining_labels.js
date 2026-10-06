@@ -100,6 +100,53 @@ async function fetchLabelsBySkuForTable(tableName, skus) {
     return { shipment: tableName, results };
 }
 
+/* The field holding a row's human-readable product name -- a lookup tied
+    to the master product catalog table (`Imported Data images, pack size
+    and FNSKU copy`), hence the "2" (there's an unused "1" counterpart from
+    an earlier lookup setup). Not every shipment table has this field --
+    a handful of older tables (e.g. "March 28 Shipment") predate it
+    entirely -- and it's a multipleLookupValues field, so Airtable always
+    returns it as an array even though the link is to one record. */
+const PRODUCT_NAME_FIELD = 'Name. 名字. Nombre. 2';
+
+/* Fetches every SKU in a shipment table paired with its human-readable
+    product name, for fuzzy name-based matching (see
+    handlers/print_handlers.js's resolveProductNameMatches). Deliberately
+    doesn't fetch Labels/Label Printed/Checked In here -- once the user
+    picks a specific SKU from the ranked candidates this surfaces, that
+    data gets fetched fresh via fetchLabelsBySkuForTable, the same as any
+    other targeted-SKU print, so this stays a light, name-only lookup.
+    Rows with no name at all -- the field is missing on this table
+    entirely, or just this row's catalog link isn't populated -- are
+    dropped rather than surfaced as an unmatchable candidate. If every row
+    comes back empty, the table simply doesn't support name-based search;
+    callers should treat that as a distinct case; it's not "no products in
+    this shipment". */
+async function fetchProductNamesForTable(tableName) {
+    const items = [];
+
+    await base(tableName)
+        .select({
+            fields: ['SKU', PRODUCT_NAME_FIELD],
+        })
+        .eachPage((records, fetchNextPage) => {
+            for (const record of records) {
+                const sku = record.get('SKU');
+                const nameLookup = record.get(PRODUCT_NAME_FIELD);
+                const productName = Array.isArray(nameLookup) && nameLookup.length > 0 ? nameLookup[0] : null;
+
+                if (!sku || !productName) {
+                    continue;
+                }
+
+                items.push({ sku, productName });
+            }
+            fetchNextPage();
+        });
+
+    return { shipment: tableName, items };
+}
+
 /* Only run as a CLI script when invoked directly (`node fetch_remaining_labels.js`
     or `npm run fetch-remaining-labels`) -- when required as a module (e.g. by
     slack_bot.js) this just exports the function below. */
@@ -114,4 +161,4 @@ if (require.main === module) {
         });
 }
 
-module.exports = { fetchRemainingLabels, fetchRemainingLabelsForTable, fetchLabelsBySkuForTable };
+module.exports = { fetchRemainingLabels, fetchRemainingLabelsForTable, fetchLabelsBySkuForTable, fetchProductNamesForTable };

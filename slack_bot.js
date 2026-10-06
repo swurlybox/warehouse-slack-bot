@@ -2,11 +2,15 @@ require('dotenv').config();
 const { App } = require('@slack/bolt');
 const { parseIntent, extractShipmentId } = require('./intent_parser');
 const { handlePendingPrintConfirmation } = require('./handlers/print_confirmation');
+const { handlePendingProductSelection } = require('./handlers/product_selection');
 const {
     handlePrintRemainingLabels,
     handleTestPrintRemainingLabels,
     handlePrintSpecificSkus,
     handleTestPrintSpecificSkus,
+    handlePrintByProductName,
+    handleTestPrintByProductName,
+    handleResolvedProductSelection,
 } = require('./handlers/print_handlers');
 const { handleQueryShipmentStatus } = require('./handlers/status_handlers');
 
@@ -27,6 +31,8 @@ const HELP_TEXT = [
     '• *test print remaining labels for the [shipment name] shipment* -- same lookup, but downloads the label PDFs instead of printing them for real. No confirmation needed.',
     '• *print sku(s) [SKU, SKU, ...] from the [shipment name] shipment* -- targeted reprint of specific SKUs, even ones already printed or not checked in (flagged in the confirmation). Same physical-printer confirmation as above. Optionally say how many labels to print for a SKU (e.g. "print 5 of SKU X" or "SKU X x3") -- it overrides the usual count, and the confirmation flags it as overridden.',
     '• *test print sku(s) [SKU, SKU, ...] from the [shipment name] shipment* -- same targeted lookup, downloads only, no confirmation needed. Same optional per-SKU quantity override as above.',
+    '• *print the [product name] from the [shipment name] shipment* -- don\'t know the exact SKU? Describe the product instead (e.g. "the kikkoman soy sauce") and I\'ll show up to 10 matching SKUs from that shipment. Reply with a number to pick one (or several, comma-separated), optionally with a quantity override (e.g. "1 x5") -- then the same physical-printer confirmation as above.',
+    '• *test print the [product name] from the [shipment name] shipment* -- same product search, but the eventual print is a dry-run download instead of physical.',
     '• *check status of the [shipment name] shipment* -- looks up a shipment by name (e.g. "august 21") and lists its remaining unprinted labels.',
     '• *check status of all shipments* -- reports remaining-label counts across every shipment (print does not support "all" -- name one shipment to print).',
     '• *help* -- shows this message.',
@@ -69,7 +75,17 @@ async function routeMessage(text, userId, say) {
         return;
     }
 
-    const { intent, skus, shipmentRef } = await parseIntent(text);
+    /* Checked next, before intent parsing, for the same reason as the
+        confirmation gate above -- a bare numeric reply like "1" or "1, 3"
+        answering a shown product-name candidate list shouldn't get
+        re-parsed as a fresh command. handleResolvedProductSelection is
+        passed in here (not required by product_selection.js directly) so
+        that module doesn't need to require handlers/print_handlers.js back. */
+    if (await handlePendingProductSelection(text, userId, say, handleResolvedProductSelection)) {
+        return;
+    }
+
+    const { intent, skus, shipmentRef, productQuery } = await parseIntent(text);
     const shipmentId = extractShipmentId(text);
     console.log(`"${text}" -> intent=${intent}, shipmentId=${shipmentId}, user=${userId}`);
 
@@ -114,6 +130,28 @@ async function routeMessage(text, userId, say) {
         }
 
         await handleTestPrintSpecificSkus({ skus, shipmentRef }, say, userId);
+        return;
+    }
+
+    if (intent === 'print_by_product_name') {
+        if (!isAuthorized(userId)) {
+            console.warn(`Blocked unauthorized print request from user ${userId}`);
+            await say(`<@${userId}> Sorry, you're not authorized to run print jobs. Ask an admin to add your Slack user ID to the allowlist.`);
+            return;
+        }
+
+        await handlePrintByProductName({ productQuery, shipmentRef }, say, userId);
+        return;
+    }
+
+    if (intent === 'test_print_by_product_name') {
+        if (!isAuthorized(userId)) {
+            console.warn(`Blocked unauthorized test print request from user ${userId}`);
+            await say(`<@${userId}> Sorry, you're not authorized to run print jobs. Ask an admin to add your Slack user ID to the allowlist.`);
+            return;
+        }
+
+        await handleTestPrintByProductName({ productQuery, shipmentRef }, say, userId);
         return;
     }
 

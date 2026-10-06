@@ -27,6 +27,8 @@ const KNOWN_INTENTS = [
     'test_print_remaining_labels',
     'print_specific_skus',
     'test_print_specific_skus',
+    'print_by_product_name',
+    'test_print_by_product_name',
     'query_shipment_status',
     'help',
 ];
@@ -46,19 +48,21 @@ const KNOWN_INTENTS = [
     not just a one-line rule. */
 const SYSTEM_PROMPT = `You classify Slack messages for a warehouse shipment-label printing bot. Every message is one worker's request; call classify_intent with your answer.
 
-Two kinds of things can appear in a message, and they never overlap:
+Three kinds of things can appear in a message, and they never overlap:
 - A SKU is a product identifier made of alphanumeric segments separated by dashes (e.g. "0F-CA35-B7BM", "NL-Y7SI-8FGG"). Put every SKU-shaped token in \`skus\`, never in \`shipment_ref\` -- even when the SKU is the first word of the sentence or reads as its grammatical subject. Example: "NL-Y7SI-8FGG needs a real print, it's from the sept 10 shipment" names exactly one SKU (NL-Y7SI-8FGG, goes in \`skus\`) and one shipment (sept 10, goes in \`shipment_ref\`) -- the SKU coming first in the sentence does not make it the shipment.
 - A shipment reference is a shipment name, date, or the word "current" (e.g. "August 21 Shipment", "sept 10", "current") -- never a SKU-shaped token.
+- A product-name query is a free-text description of a product in plain words (e.g. "kikkoman soy sauce", "the ginseng tea") -- not a SKU code and not a shipment name. Put it in \`product_query\`. Use it only when the message describes a product this way instead of quoting its exact SKU; the system looks up matching SKUs separately, so you don't need to (and can't) know the real SKU yourself here.
 
-A message may also say how many labels to print for a given SKU (e.g. "print 5 of NL-Y7SI-8FGG", "NL-Y7SI-8FGG x3", "10 labels for NL-Y7SI-8FGG", "AV-4FL8-PKNH:20"). When it does, attach that number as \`quantity\` on that SKU's own entry in \`skus\` -- quantities are per-SKU, not a single number for the whole message, since a request can name several SKUs and only give a quantity for some of them. Never invent or default a quantity: omit the field entirely for a SKU the message doesn't give one for, and let the caller look up its normal quantity separately.
+A message may also say how many labels to print for a given SKU (e.g. "print 5 of NL-Y7SI-8FGG", "NL-Y7SI-8FGG x3", "10 labels for NL-Y7SI-8FGG", "AV-4FL8-PKNH:20"). When it does, attach that number as \`quantity\` on that SKU's own entry in \`skus\` -- quantities are per-SKU, not a single number for the whole message, since a request can name several SKUs and only give a quantity for some of them. Never invent or default a quantity: omit the field entirely for a SKU the message doesn't give one for, and let the caller look up its normal quantity separately. This doesn't apply to \`product_query\` -- that field never carries a quantity itself (the system asks for one later, after the user picks a specific product).
 
 Intent meanings:
-- print_remaining_labels / test_print_remaining_labels: print or dry-run every still-unprinted label for ONE named shipment. Use ONLY when the message names no specific SKU.
-- print_specific_skus / test_print_specific_skus: print or dry-run specific, named SKU(s), regardless of their printed status. Use whenever the message names one or more SKUs, even if it also mentions "remaining" or "left" in passing.
+- print_remaining_labels / test_print_remaining_labels: print or dry-run every still-unprinted label for ONE named shipment. Use ONLY when the message names no specific SKU and describes no product by name.
+- print_specific_skus / test_print_specific_skus: print or dry-run specific, named SKU(s), regardless of their printed status. Use whenever the message names one or more SKUs by their exact code, even if it also mentions "remaining" or "left" in passing.
+- print_by_product_name / test_print_by_product_name: print or dry-run a product the message describes by name/words rather than by exact SKU code (e.g. "print the kikkoman soy sauce from the sept 10 shipment"). Still requires a shipment reference, same as the other print intents. Extract only \`product_query\` and \`shipment_ref\` here -- never guess a SKU.
 - query_shipment_status: read-only status check, for one shipment or all of them.
 - help: asking what the bot can do.
 
-Rule of thumb: if a message names any SKU at all, the intent is one of the *_specific_skus variants, never a *_remaining_labels variant.`;
+Rule of thumb: an exact SKU code in the message means one of the *_specific_skus variants; a product described by name instead of its SKU means one of the *_by_product_name variants; neither means one of the *_remaining_labels variants. Never more than one of these three at once.`;
 
 const tool = {
     name: "classify_intent",
@@ -102,16 +106,21 @@ const tool = {
                 type: "string",
                 description: "Explicit shipment identifier if one specific shipment is named (e.g. 'August 21 Shipment', 'current'). If the user is asking about every shipment rather than naming one, set this to \"all\" instead of omitting it. Omit only when neither applies."
             },
+            product_query: {
+                type: "string",
+                description: "Free-text product description (e.g. \"kikkoman soy sauce\"), only for print_by_product_name/test_print_by_product_name -- the message names a product by words rather than its exact SKU code. Omit for every other intent."
+            },
             confidence: { type: "number" }
         },
         required: ["intent", "confidence"]
     }
 };
 
-/* Returns { intent, skus?, shipmentRef?, confidence? }, where skus (if
-    present) is [{ sku, quantity? }] -- quantity is per-SKU and only present
-    when the message actually specified one; see handlers/print_handlers.js
-    for how a missing quantity falls back to Airtable's own value. 'unknown'
+/* Returns { intent, skus?, shipmentRef?, productQuery?, confidence? },
+    where skus (if present) is [{ sku, quantity? }] -- quantity is per-SKU
+    and only present when the message actually specified one; see
+    handlers/print_handlers.js for how a missing quantity falls back to
+    Airtable's own value. 'unknown'
     is an explicit, expected result -- not a failure -- for any message the model
     couldn't classify; callers should reply with example usage rather than
     failing silently. 'parser_error' is a different, genuine failure (the
@@ -158,6 +167,7 @@ async function parseIntent(text) {
         intent: output.intent,
         skus: output.skus,
         shipmentRef: output.shipment_ref,
+        productQuery: output.product_query,
         confidence: output.confidence,
     };
 }
