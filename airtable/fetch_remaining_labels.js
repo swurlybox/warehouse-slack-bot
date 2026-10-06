@@ -100,6 +100,60 @@ async function fetchLabelsBySkuForTable(tableName, skus) {
     return { shipment: tableName, results };
 }
 
+/* The field holding a row's human-readable product name -- a lookup tied
+    to the master product catalog table (`Imported Data images, pack size
+    and FNSKU copy`), hence the "2" (there's an unused "1" counterpart from
+    an earlier lookup setup). Not every shipment table has this field --
+    a handful of older tables (e.g. "March 28 Shipment") predate it
+    entirely -- and it's a multipleLookupValues field, so Airtable always
+    returns it as an array even though the link is to one record. */
+const PRODUCT_NAME_FIELD = 'Name. 名字. Nombre. 2';
+
+/* Fetches every SKU in a shipment table paired with its human-readable
+    product name and default print quantity, for fuzzy name-based matching
+    and display (see handlers/print_handlers.js's resolveProductNameMatches
+    and formatProductCandidateList). Labels comes along for free -- the
+    table is already being fully paginated for name-matching, so there's
+    no extra request for it. Deliberately still doesn't fetch Label
+    Printed/Checked In here -- that data (and the authoritative quantity,
+    re-checked in case anything changed) gets fetched fresh via
+    fetchLabelsBySkuForTable once the user actually picks a SKU, the same
+    as any other targeted-SKU print; the quantity shown here is only ever
+    a preview.
+    Rows with no name at all -- the field is missing on this table
+    entirely, or just this row's catalog link isn't populated -- are
+    dropped rather than surfaced as an unmatchable candidate. If every row
+    comes back empty, the table simply doesn't support name-based search;
+    callers should treat that as a distinct case; it's not "no products in
+    this shipment". A row missing a valid Labels value still counts as a
+    candidate (quantity comes back null) -- that's purely a display gap,
+    not a reason to exclude it from matching. */
+async function fetchProductNamesForTable(tableName) {
+    const items = [];
+
+    await base(tableName)
+        .select({
+            fields: ['SKU', PRODUCT_NAME_FIELD, 'Labels'],
+        })
+        .eachPage((records, fetchNextPage) => {
+            for (const record of records) {
+                const sku = record.get('SKU');
+                const nameLookup = record.get(PRODUCT_NAME_FIELD);
+                const productName = Array.isArray(nameLookup) && nameLookup.length > 0 ? nameLookup[0] : null;
+
+                if (!sku || !productName) {
+                    continue;
+                }
+
+                const quantity = record.get('Labels');
+                items.push({ sku, productName, quantity: Number.isFinite(quantity) ? quantity : null });
+            }
+            fetchNextPage();
+        });
+
+    return { shipment: tableName, items };
+}
+
 /* Only run as a CLI script when invoked directly (`node fetch_remaining_labels.js`
     or `npm run fetch-remaining-labels`) -- when required as a module (e.g. by
     slack_bot.js) this just exports the function below. */
@@ -114,4 +168,4 @@ if (require.main === module) {
         });
 }
 
-module.exports = { fetchRemainingLabels, fetchRemainingLabelsForTable, fetchLabelsBySkuForTable };
+module.exports = { fetchRemainingLabels, fetchRemainingLabelsForTable, fetchLabelsBySkuForTable, fetchProductNamesForTable };

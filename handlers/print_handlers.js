@@ -1,7 +1,9 @@
-const { fetchRemainingLabelsForTable, fetchLabelsBySkuForTable } = require('../airtable/fetch_remaining_labels');
+const { fetchRemainingLabelsForTable, fetchLabelsBySkuForTable, fetchProductNamesForTable } = require('../airtable/fetch_remaining_labels');
 const { findShipmentTable, isAllShipmentsQuery, SKU_TOKEN_PATTERN } = require('../airtable/shipment_lookup');
 const { submitTestPrintJob } = require('../print_service');
 const { setPendingPrint } = require('./print_confirmation');
+const { setPendingProductSelection } = require('./product_selection');
+const { rankProductMatches } = require('../product_matching');
 
 /* Resolves which shipment table a print/query command should target: an
     explicitly named shipment (e.g. "for the august 21 shipment") wins; an
@@ -287,11 +289,163 @@ async function handlePrintSpecificSkus({ skus, shipmentRef }, say, userId) {
     await say(`<@${userId}> This will send ${result.items.length} SKU(s) to the *physical printer* for "${result.shipment}":\n${lines}\nReply *confirm print* to proceed, or *cancel* to stand down (expires in 2 minutes).`);
 }
 
+const MAX_PRODUCT_CANDIDATES_SHOWN = 10;
+
+/* Shared by handlePrintByProductName and handleTestPrintByProductName:
+    resolves the shipment, fetches its name-matchable rows, ranks them
+    against the free-text query, and returns a result shape analogous to
+    resolveSkuPrintRequest above -- 'ok' with the ranked candidates, or a
+    status sayProductMatchError below (or, for the shipment-resolution
+    failures shared with every other command, sayShipmentResolutionError)
+    already knows how to report. */
+async function resolveProductNameMatches({ productQuery, shipmentRef }) {
+    if (!productQuery) {
+        return { status: 'parse_error' };
+    }
+
+    const resolved = await resolveShipmentTableName(shipmentRef).catch((error) => {
+        console.error('Failed to look up shipment tables:', error.message);
+        return { status: 'error', message: error.message };
+    });
+
+    if (resolved.status !== 'ok') {
+        return resolved;
+    }
+
+    let payload;
+    try {
+        payload = await fetchProductNamesForTable(resolved.tableName);
+    } catch (error) {
+        /* A handful of older shipment tables predate the product-name
+            lookup field entirely (confirmed live: Airtable's client throws
+            a structured UNKNOWN_FIELD_NAME error for that -- it does not,
+            as might be assumed, just silently omit an unrecognized field
+            from the response). That's a distinct, expected case from a
+            real lookup failure (network, auth, etc.) -- surfacing it as
+            "couldn't look up shipment tables" would be misleading, since
+            the shipment itself was found fine. */
+        if (error.error === 'UNKNOWN_FIELD_NAME') {
+            return { status: 'no_names_available', shipment: resolved.tableName };
+        }
+        console.error('Failed to fetch product names:', error.message);
+        return { status: 'error', message: error.message };
+    }
+
+    if (payload.items.length === 0) {
+        return { status: 'no_names_available', shipment: payload.shipment };
+    }
+
+    const ranked = await rankProductMatches(productQuery, payload.items);
+    if (ranked.error) {
+        return { status: 'error', message: 'Product matching is temporarily unavailable.' };
+    }
+
+    /* Claude is asked to only echo back SKUs it was actually given, but
+        that's a prompt instruction, not a guarantee -- cross-check against
+        the real candidate list rather than trusting it outright, same
+        spirit as the SKU_TOKEN_PATTERN re-validation in
+        resolveSkuPrintRequest above. */
+    const bySku = new Map(payload.items.map((item) => [item.sku.toUpperCase(), item]));
+    const candidates = ranked.matches
+        .map((match) => bySku.get((match.sku || '').toUpperCase()))
+        .filter(Boolean)
+        .slice(0, MAX_PRODUCT_CANDIDATES_SHOWN)
+        .map(({ sku, productName, quantity }) => ({ sku, productName, quantity }));
+
+    if (candidates.length === 0) {
+        return { status: 'no_matches', shipment: payload.shipment, query: productQuery };
+    }
+
+    return { status: 'ok', shipment: payload.shipment, candidates };
+}
+
+/* Reports resolveProductNameMatches' own failure modes; falls through to
+    sayShipmentResolutionError for the shipment-resolution failures shared
+    with every other command. Same true/false contract as that function. */
+async function sayProductMatchError(result, say, userId, exampleCommand) {
+    if (result.status === 'parse_error') {
+        await say(`<@${userId}> I couldn't tell what product you meant. Try something like "${exampleCommand}".`);
+        return true;
+    }
+    if (result.status === 'no_names_available') {
+        await say(`<@${userId}> "${result.shipment}" doesn't support searching by product name (it predates that data) -- try naming the SKU directly instead.`);
+        return true;
+    }
+    if (result.status === 'no_matches') {
+        await say(`<@${userId}> Couldn't find anything in "${result.shipment}" matching "${result.query}".`);
+        return true;
+    }
+    return sayShipmentResolutionError(result, say, userId, exampleCommand);
+}
+
+/* Product names here run long (real examples are 80-150+ characters), so
+    the SKU and default quantity always go on their own indented line
+    rather than being crammed onto the end of the name line -- consistent
+    wrapping reads better than only wrapping the occasional short one.
+    The quantity shown is Airtable's default at search time, not
+    necessarily final -- resolveSkuPrintRequest re-fetches it fresh (and
+    an explicit "x<N>" at selection time overrides it); labeling it
+    "Default qty" here keeps that relationship clear rather than implying
+    it's locked in. Omitted entirely for a row with no valid Labels value
+    rather than printing a misleading "qty: null". */
+function formatProductCandidateList(candidates) {
+    return candidates.map((candidate, i) => {
+        const qtyPart = Number.isFinite(candidate.quantity) ? ` · Default qty *${candidate.quantity}*` : '';
+        return `${i + 1}. ${candidate.productName}\n   SKU *${candidate.sku}*${qtyPart}`;
+    }).join('\n');
+}
+
+/* Shared by handlePrintByProductName/handleTestPrintByProductName: shows
+    the ranked matches and holds them as a pending selection (see
+    handlers/product_selection.js) -- isTest controls only which handler
+    the eventual numeric reply hands off to, not anything about this step
+    itself. Nothing is resolved to a specific SKU, let alone printed, until
+    the user actually replies with a number. */
+async function handleProductNameSearch({ productQuery, shipmentRef }, say, userId, isTest) {
+    const result = await resolveProductNameMatches({ productQuery, shipmentRef });
+    const exampleCommand = `${isTest ? 'test print' : 'print'} the kikkoman soy sauce from the august 21 shipment`;
+    if (await sayProductMatchError(result, say, userId, exampleCommand)) {
+        return;
+    }
+
+    setPendingProductSelection(userId, { shipment: result.shipment, isTest, candidates: result.candidates });
+
+    await say(`<@${userId}> Found ${result.candidates.length} match(es) in "${result.shipment}" for "${productQuery}":\n${formatProductCandidateList(result.candidates)}\nReply with a number to pick one (e.g. "1"), multiple separated by commas (e.g. "1, 3"), optionally with a quantity override (e.g. "1 x5") -- or *cancel* to back out. Expires in 2 minutes.`);
+}
+
+/* Searches for a product by name within a shipment and shows the ranked
+    matches as a dry-run-only lookup -- no confirmation needed for this
+    step regardless of isTest, since nothing prints yet either way; isTest
+    only decides whether the eventual numeric selection leads to a real
+    print (gated by the usual confirm/cancel step) or a dry run. */
+async function handlePrintByProductName({ productQuery, shipmentRef }, say, userId) {
+    await handleProductNameSearch({ productQuery, shipmentRef }, say, userId, false);
+}
+
+async function handleTestPrintByProductName({ productQuery, shipmentRef }, say, userId) {
+    await handleProductNameSearch({ productQuery, shipmentRef }, say, userId, true);
+}
+
+/* Called by product_selection.js's handlePendingProductSelection once the
+    user's numeric reply resolves to concrete SKU(s) -- hands off to the
+    exact same handlers every other targeted-SKU print goes through
+    (re-fetching fresh quantity/already-printed/checked-in data rather than
+    trusting what was shown minutes earlier at selection time), so this
+    feature is just a different way of arriving at a { skus, shipmentRef }
+    request, not a second print pipeline. */
+async function handleResolvedProductSelection({ shipment, isTest, items }, say, userId) {
+    const handler = isTest ? handleTestPrintSpecificSkus : handlePrintSpecificSkus;
+    await handler({ skus: items, shipmentRef: shipment }, say, userId);
+}
+
 module.exports = {
     handleTestPrintRemainingLabels,
     handlePrintRemainingLabels,
     handleTestPrintSpecificSkus,
     handlePrintSpecificSkus,
+    handlePrintByProductName,
+    handleTestPrintByProductName,
+    handleResolvedProductSelection,
     resolveShipmentAndFetchRemaining,
     sayShipmentResolutionError,
 };
