@@ -215,6 +215,7 @@ app.action('status_page_nav', async ({ ack, body, client }) => {
 
     const cached = getStatusPageCache(channelId, messageTs);
     if (!cached) {
+        console.log(`status_page_nav: cache miss for ${channelId}:${messageTs} (requested page ${targetPage}) -- showing expired notice`);
         await client.chat.update({
             channel: channelId,
             ts: messageTs,
@@ -229,6 +230,8 @@ app.action('status_page_nav', async ({ ack, body, client }) => {
 
     const totalPages = Math.ceil(cached.rows.length / STATUS_PAGE_SIZE);
     const page = Math.min(Math.max(targetPage, 0), totalPages - 1); // defensive clamp against a stale/odd value
+
+    console.log(`status_page_nav: "${cached.shipment}" -> page ${page + 1}/${totalPages} for ${channelId}:${messageTs}`);
 
     const { text, blocks } = buildStatusPageBlocks({
         shipment: cached.shipment,
