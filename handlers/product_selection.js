@@ -1,3 +1,9 @@
+/**
+ * @module handlers/product_selection
+ * Pending-selection gate for a numeric reply to a shown product-name
+ * candidate list.
+ */
+
 /* In-memory only, per Slack user -- holds the ranked candidate list shown
     after a "print the [product] from [shipment] shipment" request, until
     the user replies with a numeric selection. Same shape and TTL

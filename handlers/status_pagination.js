@@ -1,3 +1,9 @@
+/**
+ * @module handlers/status_pagination
+ * In-memory cache + periodic sweep for paginated shipment-status Block Kit
+ * messages, keyed by message identity rather than user.
+ */
+
 /* In-memory only, keyed by `channel:ts` rather than Slack userId -- a
     Next/Previous button click's payload carries body.channel.id and
     body.message.ts (which message is this?), not a pending-state owner the

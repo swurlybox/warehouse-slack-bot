@@ -1,3 +1,8 @@
+/**
+ * @module handlers/print_handlers
+ * Print and test-print command handlers: shared shipment resolution,
+ * SKU/product-name lookup, and the real/dry print dispatch.
+ */
 const { fetchRemainingLabelsForTable, fetchLabelsBySkuForTable, fetchProductNamesForTable, describeAirtableError } = require('../airtable/fetch_remaining_labels');
 const { findShipmentTable, isAllShipmentsQuery, SKU_TOKEN_PATTERN } = require('../airtable/shipment_lookup');
 const { submitTestPrintJob } = require('../print_service');

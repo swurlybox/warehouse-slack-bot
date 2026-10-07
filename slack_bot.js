@@ -1,3 +1,9 @@
+/**
+ * @module slack_bot
+ * Entry point: Bolt Socket Mode app setup, message routing (routeMessage),
+ * per-intent dispatch to handlers/, and the status-pagination button-click
+ * handler.
+ */
 require('dotenv').config();
 const { App } = require('@slack/bolt');
 const { parseIntent, extractShipmentId } = require('./intent_parser');

@@ -1,3 +1,8 @@
+/**
+ * @module shipment_matching
+ * LLM fallback for fuzzy shipment-table-name matching, used only when
+ * exact token matching (in airtable/shipment_lookup.js) finds nothing.
+ */
 const { Anthropic } = require("@anthropic-ai/sdk");
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;

@@ -1,3 +1,9 @@
+/**
+ * @module airtable/fetch_remaining_labels
+ * Per-table Airtable queries (remaining labels, not-checked-in rows, SKU
+ * lookup, product names/images) plus describeAirtableError, the
+ * error-sanitizing chokepoint for every Slack-facing Airtable error.
+ */
 require('dotenv').config();
 const Airtable = require('airtable');
 

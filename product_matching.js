@@ -1,3 +1,8 @@
+/**
+ * @module product_matching
+ * LLM-based ranking of a shipment's product rows against a free-text
+ * product-name query (e.g. "the kikkoman soy sauce").
+ */
 const { Anthropic } = require("@anthropic-ai/sdk");
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;

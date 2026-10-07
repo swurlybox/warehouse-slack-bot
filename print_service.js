@@ -1,3 +1,9 @@
+/**
+ * @module print_service
+ * Thin HTTP client for the RPi print server's /print and /dry-print
+ * routes -- the only point where this bot talks to the physical print
+ * pipeline.
+ */
 const PRINT_SERVER_URL = process.env.PRINT_SERVER_URL;
 const PRINT_SERVER_API_KEY = process.env.PRINT_SERVER_API_KEY;
 

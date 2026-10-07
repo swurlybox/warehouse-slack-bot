@@ -1,3 +1,9 @@
+/**
+ * @module handlers/status_handlers
+ * Status command handlers: single-shipment paginated status (remaining +
+ * not-checked-in rows, with product name/image) and the all-shipments
+ * overview.
+ */
 const { isAllShipmentsQuery, fetchRemainingLabelsForAllShipments } = require('../airtable/shipment_lookup');
 const { fetchNotCheckedInForTable, fetchProductNamesForTable, describeAirtableError } = require('../airtable/fetch_remaining_labels');
 const { setStatusPageCache } = require('./status_pagination');

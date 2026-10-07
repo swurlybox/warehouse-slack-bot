@@ -1,3 +1,9 @@
+/**
+ * @module airtable/shipment_lookup
+ * Resolves a user's shipment reference to a real Airtable table name:
+ * exact token match, LLM fuzzy fallback, and recency tie-break on
+ * ambiguous matches.
+ */
 require('dotenv').config();
 const { fetchRemainingLabelsForTable, fetchNotCheckedInForTable, getTableCreatedTime, describeAirtableError } = require('./fetch_remaining_labels');
 const { matchShipmentName } = require('../shipment_matching');

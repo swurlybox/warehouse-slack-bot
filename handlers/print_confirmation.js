@@ -1,3 +1,8 @@
+/**
+ * @module handlers/print_confirmation
+ * Pending-confirmation gate for a real (physical) print request, awaiting
+ * a "confirm"/"cancel" reply from the same user.
+ */
 const { submitPrintJob } = require('../print_service');
 
 /* In-memory only, per Slack user -- a real print request is held here

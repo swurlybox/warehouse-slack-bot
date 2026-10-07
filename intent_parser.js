@@ -1,3 +1,9 @@
+/**
+ * @module intent_parser
+ * LLM-based intent classification and entity extraction (shipment name,
+ * SKUs, product query) for every incoming Slack message, via one forced
+ * tool call to Claude.
+ */
 const { Anthropic } = require("@anthropic-ai/sdk");
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
