@@ -12,7 +12,8 @@ const {
     handleTestPrintByProductName,
     handleResolvedProductSelection,
 } = require('./handlers/print_handlers');
-const { handleQueryShipmentStatus } = require('./handlers/status_handlers');
+const { handleQueryShipmentStatus, buildStatusPageBlocks, STATUS_PAGE_SIZE } = require('./handlers/status_handlers');
+const { setStatusPageCache, getStatusPageCache } = require('./handlers/status_pagination');
 
 const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN;
 const SLACK_APP_TOKEN = process.env.SLACK_APP_TOKEN;
@@ -195,6 +196,51 @@ app.message(async ({ message, say, context }) => {
     }
 
     await routeMessage(message.text, message.user, say);
+});
+
+/* Handles Next/Previous clicks on a paginated shipment-status message (see
+    handlers/status_handlers.js's buildStatusPageBlocks). Arrives over the
+    same Socket Mode websocket as everything else -- no separate endpoint
+    needed -- but as a block_actions payload, not a chat message, so it
+    can't go through routeMessage's pending-state checks (those are keyed
+    by which user is expected to reply; a button click instead carries
+    which message was clicked, via body.channel.id/body.message.ts, which
+    is what status_pagination.js's cache is keyed by). */
+app.action('status_page_nav', async ({ ack, body, client }) => {
+    await ack(); // first, before any Airtable/Slack-API work -- Slack requires ack within 3s
+
+    const channelId = body.channel.id;
+    const messageTs = body.message.ts;
+    const targetPage = Number(body.actions[0].value);
+
+    const cached = getStatusPageCache(channelId, messageTs);
+    if (!cached) {
+        await client.chat.update({
+            channel: channelId,
+            ts: messageTs,
+            text: 'This view expired -- please re-run the status command.',
+            blocks: [{
+                type: 'section',
+                text: { type: 'mrkdwn', text: ':warning: This view expired. Re-run the status command (e.g. "check status of the sept 10 shipment") to see current data.' },
+            }],
+        });
+        return;
+    }
+
+    const totalPages = Math.ceil(cached.rows.length / STATUS_PAGE_SIZE);
+    const page = Math.min(Math.max(targetPage, 0), totalPages - 1); // defensive clamp against a stale/odd value
+
+    const { text, blocks } = buildStatusPageBlocks({
+        shipment: cached.shipment,
+        userId: cached.userId,
+        rows: cached.rows,
+        page,
+        totalPages,
+    });
+
+    await client.chat.update({ channel: channelId, ts: messageTs, text, blocks });
+
+    setStatusPageCache(channelId, messageTs, cached); // slides the TTL forward on activity
 });
 
 (async () => {
