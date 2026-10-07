@@ -74,12 +74,13 @@ function buildStatusPageBlocks({ shipment, userId, rows, page, totalPages }) {
     return { text, blocks };
 }
 
-/* Reports remaining-label counts across every known shipment table (paced
-    one Airtable request at a time -- see fetchRemainingLabelsForAllShipments
-    for the rate-limit reasoning). Only shipments that still need labels, or
-    that failed to read, are listed individually; fully-printed shipments are
-    just counted, since spelling out all ~25+ of them every time would bury
-    the ones that actually need attention. */
+/* Reports remaining-label and not-checked-in counts across every known
+    shipment table (paced one Airtable request at a time -- see
+    fetchRemainingLabelsForAllShipments for the rate-limit reasoning). Only
+    shipments that still need labels, have a not-checked-in SKU, or failed
+    to read are listed individually; shipments with neither are just
+    counted as fully printed, since spelling out all ~25+ of them every
+    time would bury the ones that actually need attention. */
 async function handleQueryAllShipmentsStatus(say, userId) {
     let results;
     try {
@@ -91,27 +92,29 @@ async function handleQueryAllShipmentsStatus(say, userId) {
     }
 
     const withRemaining = results.filter((r) => !r.error && r.items.length > 0);
-    /* hasAnyCheckedIn === false is a confirmed "nothing checked in yet";
-        null (schema-drift table, or the check itself failed) is unknown,
-        not a confirmed negative, so it's left out of this bucket and
-        counted as fully printed below instead -- same as before this
-        flag existed. */
-    const notCheckedInAtAll = results.filter((r) => !r.error && r.items.length === 0 && r.hasAnyCheckedIn === false);
-    const fullyPrinted = results.filter((r) => !r.error && r.items.length === 0 && r.hasAnyCheckedIn !== false);
+    /* Not mutually exclusive with withRemaining above -- a shipment can
+        have some rows still needing labels AND some individual rows not
+        checked in at the same time, and both facts are worth surfacing, so
+        a shipment can legitimately appear in both lists below. null
+        (schema-drift table, or the check itself failed) is unknown, not a
+        confirmed zero, so it's left out of this bucket and counted as
+        fully printed below instead. */
+    const withNotCheckedIn = results.filter((r) => !r.error && r.notCheckedInCount > 0);
+    const fullyPrinted = results.filter((r) => !r.error && r.items.length === 0 && !r.notCheckedInCount);
     const failed = results.filter((r) => r.error);
 
-    if (withRemaining.length === 0 && notCheckedInAtAll.length === 0 && failed.length === 0) {
+    if (withRemaining.length === 0 && withNotCheckedIn.length === 0 && failed.length === 0) {
         await say(`<@${userId}> Checked ${results.length} shipment(s) -- all fully printed, nothing remaining anywhere.`);
         return;
     }
 
     const lines = [
         ...withRemaining.map((r) => `• "${r.shipment}" -- ${r.items.length} SKU(s) remaining`),
-        ...notCheckedInAtAll.map((r) => `• "${r.shipment}" -- nothing checked in yet`),
+        ...withNotCheckedIn.map((r) => `• "${r.shipment}" -- ${r.notCheckedInCount} SKU(s) not checked in`),
         ...failed.map((r) => `• "${r.shipment}" -- couldn't read (${r.error})`),
     ];
 
-    const summary = `Checked ${results.length} shipment(s): ${withRemaining.length} with remaining labels, ${notCheckedInAtAll.length} not checked in at all, ${fullyPrinted.length} fully printed` +
+    const summary = `Checked ${results.length} shipment(s): ${withRemaining.length} with remaining labels, ${withNotCheckedIn.length} with SKUs not checked in, ${fullyPrinted.length} fully printed` +
         (failed.length ? `, ${failed.length} failed to read` : '') + '.';
 
     await say(`<@${userId}> ${summary}\n${lines.join('\n')}`);

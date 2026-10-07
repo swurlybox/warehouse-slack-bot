@@ -109,24 +109,6 @@ async function fetchNotCheckedInForTable(tableName) {
     return { shipment: tableName, items, unsupported: false };
 }
 
-/* Cheap existence check -- a single maxRecords:1 sample, same pattern as
-    getTableCreatedTime below -- for whether a shipment has had ANY row
-    checked in at all, used by shipment_lookup.js's
-    fetchRemainingLabelsForAllShipments to flag shipments that haven't been
-    started yet (as opposed to ones that are genuinely fully printed, which
-    look identical under the remaining-labels filter alone: both have zero
-    rows matching AND(NOT(Label Printed), Checked In)). Only called after
-    fetchRemainingLabelsForTable has already succeeded for the same table,
-    which already confirms the Checked In field exists there -- so unlike
-    fetchNotCheckedInForTable above, this doesn't need its own
-    schema-drift handling. */
-async function tableHasAnyCheckedIn(tableName) {
-    const records = await base(tableName)
-        .select({ filterByFormula: '{Checked In}', maxRecords: 1, fields: ['SKU'] })
-        .firstPage();
-    return { shipment: tableName, hasAny: records.length > 0 };
-}
-
 /* Looks up specific SKUs within a shipment table by exact name match
     (case-insensitively -- Airtable's own SKU casing is the source of truth,
     but callers (e.g. the LLM intent parser) may echo back whatever casing
@@ -292,4 +274,4 @@ if (require.main === module) {
         });
 }
 
-module.exports = { fetchRemainingLabels, fetchRemainingLabelsForTable, fetchLabelsBySkuForTable, fetchProductNamesForTable, fetchNotCheckedInForTable, tableHasAnyCheckedIn, getTableCreatedTime, describeAirtableError };
+module.exports = { fetchRemainingLabels, fetchRemainingLabelsForTable, fetchLabelsBySkuForTable, fetchProductNamesForTable, fetchNotCheckedInForTable, getTableCreatedTime, describeAirtableError };

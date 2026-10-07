@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { fetchRemainingLabelsForTable, tableHasAnyCheckedIn, getTableCreatedTime, describeAirtableError } = require('./fetch_remaining_labels');
+const { fetchRemainingLabelsForTable, fetchNotCheckedInForTable, getTableCreatedTime, describeAirtableError } = require('./fetch_remaining_labels');
 const { matchShipmentName } = require('../shipment_matching');
 
 const AIRTABLE_API_KEY = process.env.AIRTABLE_API_KEY;
@@ -203,18 +203,21 @@ async function findShipmentTable(text) {
     the client's own retries are exhausted) doesn't abort the rest -- it's
     recorded per-table so the caller can report partial results instead of
     an all-or-nothing failure.
-    Also flags whether each table has had anything checked in at all
-    (`hasAnyCheckedIn`) -- status_handlers.js uses this to distinguish a
-    shipment that's genuinely fully printed from one that just hasn't been
-    started yet, which otherwise look identical (both have zero rows
-    matching the remaining-labels filter). Deliberately only checked for
-    tables whose remaining-labels fetch above already succeeded: that
-    success already confirms the Checked In field exists there, so a table
-    with the schema-drift problem (missing that field entirely) already
-    landed in the `error` branch and is skipped here rather than queried
-    again for the same missing field. `hasAnyCheckedIn` stays null for
-    those (and for any transient failure on this second check) -- callers
-    should treat null as "unknown", not "nothing checked in". */
+    Also counts each table's not-checked-in rows (`notCheckedInCount`) --
+    status_handlers.js flags a shipment whenever this is nonzero, since a
+    shipment can have some rows checked in (and even fully printed) while
+    others individually still aren't -- that distinction is invisible to
+    the remaining-labels filter alone (a not-checked-in row never matches
+    it, checked in or not), so without this a shipment like that would read
+    as "fully printed" despite having an outstanding not-checked-in SKU.
+    Deliberately only checked for tables whose remaining-labels fetch above
+    already succeeded: that success already confirms the Checked In field
+    exists there, so a table with the schema-drift problem (missing that
+    field entirely) already landed in the `error` branch and is skipped
+    here rather than queried again for the same missing field.
+    `notCheckedInCount` stays null for those (and for any transient failure
+    on this second check) -- callers should treat null as "unknown", not
+    "zero". */
 async function fetchRemainingLabelsForAllShipments() {
     const tables = await listShipmentTables();
     const results = [];
@@ -224,21 +227,22 @@ async function fetchRemainingLabelsForAllShipments() {
         try {
             payload = await fetchRemainingLabelsForTable(table.name);
         } catch (error) {
-            results.push({ shipment: table.name, items: null, hasAnyCheckedIn: null, error: describeAirtableError(error) });
+            results.push({ shipment: table.name, items: null, notCheckedInCount: null, error: describeAirtableError(error) });
             await delay(AIRTABLE_MIN_REQUEST_INTERVAL_MS);
             continue;
         }
         await delay(AIRTABLE_MIN_REQUEST_INTERVAL_MS);
 
-        let hasAnyCheckedIn = null;
+        let notCheckedInCount = null;
         try {
-            hasAnyCheckedIn = (await tableHasAnyCheckedIn(table.name)).hasAny;
+            const notCheckedIn = await fetchNotCheckedInForTable(table.name);
+            notCheckedInCount = notCheckedIn.items ? notCheckedIn.items.length : null;
         } catch (error) {
-            console.error(`Failed to check checked-in status for "${table.name}":`, error.message);
+            console.error(`Failed to check not-checked-in SKUs for "${table.name}":`, error.message);
         }
         await delay(AIRTABLE_MIN_REQUEST_INTERVAL_MS);
 
-        results.push({ shipment: payload.shipment, items: payload.items, hasAnyCheckedIn, error: null });
+        results.push({ shipment: payload.shipment, items: payload.items, notCheckedInCount, error: null });
     }
 
     return results;
