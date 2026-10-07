@@ -18,15 +18,36 @@ const base = new Airtable({ apiKey: AIRTABLE_API_KEY }).base(AIRTABLE_BASE_ID);
     request URL -- base ID, table name, and any filterByFormula/fields query
     params -- e.g. "request to https://api.airtable.com/v0/<base>/<table>
     ?filterByFormula=... failed, reason: connect ECONNRESET ...". That's not
-    something a Slack message should ever echo back. Callers that surface an
-    Airtable-sourced error to the user should route it through this first,
-    which reduces it to just the underlying reason (e.g. "ECONNRESET") when
-    that URL-leaking shape is detected, and otherwise leaves the message
-    untouched -- a real Airtable API error (bad formula, unknown field, auth)
-    already has its own clean, URL-free message. */
+    something a Slack message should ever echo back.
+    Separately, a handful of older shipment tables predate the Checked In
+    field entirely (see fetchNotCheckedInForTable above) -- any query that
+    references it throws a raw, developer-facing Airtable error on those
+    tables, either INVALID_FILTER_BY_FORMULA ("The formula for filtering
+    records is invalid: Unknown field names: checked in", from a
+    filterByFormula string) or UNKNOWN_FIELD_NAME (from a fields: array
+    entry). Both are just as inappropriate to show a warehouse worker as
+    the URL leak above -- this bot's Slack audience isn't technical, so
+    "formula", "field", and "Airtable" aren't words that mean anything
+    useful to them, and "schema drift" (what this actually is, internally)
+    isn't either.
+    Callers that surface an Airtable-sourced error to the user should
+    route it through this first, which rewrites all of the above into
+    plain language and otherwise leaves the message untouched -- most
+    other real Airtable API errors (auth, rate limit) already have a
+    reasonably plain message of their own. */
 function describeAirtableError(error) {
-    const match = /^request to .* failed, reason: (.*)$/.exec(error.message || '');
-    return match ? (error.code || match[1]) : error.message;
+    const networkMatch = /^request to .* failed, reason: (.*)$/.exec(error.message || '');
+    if (networkMatch) {
+        return error.code || networkMatch[1];
+    }
+
+    const isMissingFieldError = error.error === 'UNKNOWN_FIELD_NAME' ||
+        (error.error === 'INVALID_FILTER_BY_FORMULA' && /unknown field names/i.test(error.message || ''));
+    if (isMissingFieldError) {
+        return "this shipment was set up differently than newer ones, so I can't check it right now -- let whoever manages the shipment sheet know.";
+    }
+
+    return error.message;
 }
 
 /* Queries the given shipment table for rows still needing labels printed and
