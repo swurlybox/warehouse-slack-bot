@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { App, SocketModeReceiver } = require('@slack/bolt');
+const { App } = require('@slack/bolt');
 const { parseIntent, extractShipmentId } = require('./intent_parser');
 const { handlePendingPrintConfirmation } = require('./handlers/print_confirmation');
 const { handlePendingProductSelection } = require('./handlers/product_selection');
@@ -59,35 +59,13 @@ function isAuthorized(userId) {
     return AUTHORIZED_USER_IDS.has(userId);
 }
 
-/* Bolt's `socketMode: true` shorthand builds its own default
-    SocketModeReceiver internally (see @slack/bolt's App.js, initReceiver),
-    but that path doesn't forward clientPingTimeout/serverPingTimeout --
-    only appToken/clientId/clientSecret/stateSecret/redirectUri/
-    installationStore/scopes/logger/logLevel/installerOptions/customRoutes
-    make it through. That leaves @slack/socket-mode's hardcoded 5-second
-    client ping timeout in effect no matter what, which is tight enough
-    that ordinary network jitter (not just a genuinely dead connection)
-    trips a "pong wasn't received" disconnect/reconnect cycle -- this
-    session hit that repeatedly. Constructing the receiver manually and
-    passing it in as `receiver` is the only way to loosen it; `socketMode:
-    true` is kept alongside it because App.js's initReceiver only accepts a
-    custom receiver when it actually is a SocketModeReceiver, which this
-    is. 3x/2x the defaults (5000ms/30000ms) -- enough headroom to absorb
-    real jitter without waiting so long that a truly dead connection goes
-    unnoticed for an unreasonable stretch. */
-const socketModeReceiver = new SocketModeReceiver({
-    appToken: SLACK_APP_TOKEN,
-    clientPingTimeout: 15000,
-    serverPingTimeout: 60000,
-});
-
 /* Socket Mode opens an outbound WebSocket from here to Slack instead of
     listening for inbound HTTP -- no public endpoint needed, which fits the
     Tailscale-only RPi setup. */
 const app = new App({
     token: SLACK_BOT_TOKEN,
+    appToken: SLACK_APP_TOKEN,
     socketMode: true,
-    receiver: socketModeReceiver,
 });
 
 async function routeMessage(text, userId, say) {
