@@ -24,6 +24,33 @@ const pendingStatusPages = new Map();
     mid-session; only a view nobody touches for 10 minutes goes stale. */
 const STATUS_PAGE_TIMEOUT_MS = 10 * 60 * 1000;
 
+/* Unlike print_confirmation.js/product_selection.js (keyed by userId, where
+    a new pending entry from the same user overwrites their old one, so
+    those maps are naturally capped at "number of distinct users with
+    something pending"), this map is keyed by message identity -- every
+    multi-page status reply creates a brand-new key that's never reused.
+    Lazy expiry alone (deleting an entry only when it's read again) isn't
+    enough here: a page most users read once and never click again has no
+    later read to trigger that deletion, so it would otherwise sit in
+    memory for the life of the process. This interval sweep deletes
+    anything past its expiresAt on a fixed schedule, independent of whether
+    it's ever looked up again, so memory stays bounded by "entries created
+    in roughly the last TTL window" rather than "every paginated reply ever
+    sent." unref() keeps this timer from holding the process open (e.g.
+    during tests that import this module without ever calling app.start()). */
+const SWEEP_INTERVAL_MS = 5 * 60 * 1000;
+
+function sweepExpiredStatusPages() {
+    const now = Date.now();
+    for (const [key, entry] of pendingStatusPages) {
+        if (now > entry.expiresAt) {
+            pendingStatusPages.delete(key);
+        }
+    }
+}
+
+setInterval(sweepExpiredStatusPages, SWEEP_INTERVAL_MS).unref();
+
 function statusPageKey(channelId, messageTs) {
     return `${channelId}:${messageTs}`;
 }
