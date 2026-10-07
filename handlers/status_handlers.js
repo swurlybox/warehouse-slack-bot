@@ -23,20 +23,27 @@ async function handleQueryAllShipmentsStatus(say, userId) {
     }
 
     const withRemaining = results.filter((r) => !r.error && r.items.length > 0);
-    const fullyPrinted = results.filter((r) => !r.error && r.items.length === 0);
+    /* hasAnyCheckedIn === false is a confirmed "nothing checked in yet";
+        null (schema-drift table, or the check itself failed) is unknown,
+        not a confirmed negative, so it's left out of this bucket and
+        counted as fully printed below instead -- same as before this
+        flag existed. */
+    const notCheckedInAtAll = results.filter((r) => !r.error && r.items.length === 0 && r.hasAnyCheckedIn === false);
+    const fullyPrinted = results.filter((r) => !r.error && r.items.length === 0 && r.hasAnyCheckedIn !== false);
     const failed = results.filter((r) => r.error);
 
-    if (withRemaining.length === 0 && failed.length === 0) {
+    if (withRemaining.length === 0 && notCheckedInAtAll.length === 0 && failed.length === 0) {
         await say(`<@${userId}> Checked ${results.length} shipment(s) -- all fully printed, nothing remaining anywhere.`);
         return;
     }
 
     const lines = [
         ...withRemaining.map((r) => `• "${r.shipment}" -- ${r.items.length} SKU(s) remaining`),
+        ...notCheckedInAtAll.map((r) => `• "${r.shipment}" -- nothing checked in yet`),
         ...failed.map((r) => `• "${r.shipment}" -- couldn't read (${r.error})`),
     ];
 
-    const summary = `Checked ${results.length} shipment(s): ${withRemaining.length} with remaining labels, ${fullyPrinted.length} fully printed` +
+    const summary = `Checked ${results.length} shipment(s): ${withRemaining.length} with remaining labels, ${notCheckedInAtAll.length} not checked in at all, ${fullyPrinted.length} fully printed` +
         (failed.length ? `, ${failed.length} failed to read` : '') + '.';
 
     await say(`<@${userId}> ${summary}\n${lines.join('\n')}`);

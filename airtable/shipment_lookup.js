@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { fetchRemainingLabelsForTable, getTableCreatedTime } = require('./fetch_remaining_labels');
+const { fetchRemainingLabelsForTable, tableHasAnyCheckedIn, getTableCreatedTime } = require('./fetch_remaining_labels');
 const { matchShipmentName } = require('../shipment_matching');
 
 const AIRTABLE_API_KEY = process.env.AIRTABLE_API_KEY;
@@ -202,19 +202,43 @@ async function findShipmentTable(text) {
     time. A single table failing (e.g. a transient Airtable error even after
     the client's own retries are exhausted) doesn't abort the rest -- it's
     recorded per-table so the caller can report partial results instead of
-    an all-or-nothing failure. */
+    an all-or-nothing failure.
+    Also flags whether each table has had anything checked in at all
+    (`hasAnyCheckedIn`) -- status_handlers.js uses this to distinguish a
+    shipment that's genuinely fully printed from one that just hasn't been
+    started yet, which otherwise look identical (both have zero rows
+    matching the remaining-labels filter). Deliberately only checked for
+    tables whose remaining-labels fetch above already succeeded: that
+    success already confirms the Checked In field exists there, so a table
+    with the schema-drift problem (missing that field entirely) already
+    landed in the `error` branch and is skipped here rather than queried
+    again for the same missing field. `hasAnyCheckedIn` stays null for
+    those (and for any transient failure on this second check) -- callers
+    should treat null as "unknown", not "nothing checked in". */
 async function fetchRemainingLabelsForAllShipments() {
     const tables = await listShipmentTables();
     const results = [];
 
     for (const table of tables) {
+        let payload;
         try {
-            const payload = await fetchRemainingLabelsForTable(table.name);
-            results.push({ shipment: payload.shipment, items: payload.items, error: null });
+            payload = await fetchRemainingLabelsForTable(table.name);
         } catch (error) {
-            results.push({ shipment: table.name, items: null, error: error.message });
+            results.push({ shipment: table.name, items: null, hasAnyCheckedIn: null, error: error.message });
+            await delay(AIRTABLE_MIN_REQUEST_INTERVAL_MS);
+            continue;
         }
         await delay(AIRTABLE_MIN_REQUEST_INTERVAL_MS);
+
+        let hasAnyCheckedIn = null;
+        try {
+            hasAnyCheckedIn = (await tableHasAnyCheckedIn(table.name)).hasAny;
+        } catch (error) {
+            console.error(`Failed to check checked-in status for "${table.name}":`, error.message);
+        }
+        await delay(AIRTABLE_MIN_REQUEST_INTERVAL_MS);
+
+        results.push({ shipment: payload.shipment, items: payload.items, hasAnyCheckedIn, error: null });
     }
 
     return results;
