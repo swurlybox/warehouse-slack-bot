@@ -181,13 +181,19 @@ async function handleQueryShipmentStatus({ shipmentRef }, say, userId) {
         return;
     }
 
-    /* The "nothing left to print" framing has nowhere to live inside the
-        paginated row view below (it's not a row), so when every row that's
-        about to be shown is a not-checked-in one, it's said here as its own
-        preamble message instead, same spot sayDisambiguationNoteIfAny's note
-        already uses -- nothing the plain-text version used to say is lost. */
+    /* Reached only when notCheckedInRows.length > 0 (the both-empty case
+        above already returned) -- "everything's already printed" would be
+        actively wrong here: these SKUs haven't been checked in at all, so
+        there's nothing *ready* to print, not nothing *left* to print --
+        e.g. a brand-new shipment nobody's started receiving yet looks
+        identical to a fully-printed one under the remaining-labels filter
+        alone, and conflating the two is misleading. This framing has
+        nowhere to live inside the paginated row view below (it's not a
+        row), so it's said here as its own preamble message instead, same
+        spot sayDisambiguationNoteIfAny's note already uses -- nothing the
+        plain-text version used to say is lost, just said accurately. */
     if (remainingRows.length === 0) {
-        preambleNotes.unshift(`"${result.shipment}" has no remaining labels to print -- everything's already printed.`);
+        preambleNotes.unshift(`"${result.shipment}" has no remaining labels to print yet -- nothing's been checked in.`);
     }
 
     if (preambleNotes.length > 0) {
