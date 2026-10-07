@@ -1,5 +1,5 @@
 const { isAllShipmentsQuery, fetchRemainingLabelsForAllShipments } = require('../airtable/shipment_lookup');
-const { fetchNotCheckedInForTable } = require('../airtable/fetch_remaining_labels');
+const { fetchNotCheckedInForTable, describeAirtableError } = require('../airtable/fetch_remaining_labels');
 /* Reuses print_handlers.js's shipment resolution + error-reporting helpers
     rather than duplicating them -- status and print commands share the same
     "which shipment, what's remaining" logic, they just do different things
@@ -86,7 +86,7 @@ async function handleQueryShipmentStatus({ shipmentRef }, say, userId) {
         notCheckedIn = await fetchNotCheckedInForTable(result.shipment);
     } catch (error) {
         console.error('Failed to fetch not-checked-in SKUs:', error.message);
-        notCheckedIn = { items: null, unsupported: false, error: error.message };
+        notCheckedIn = { items: null, unsupported: false, error: describeAirtableError(error) };
     }
 
     if (notCheckedIn.unsupported) {

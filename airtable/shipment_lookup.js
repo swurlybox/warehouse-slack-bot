@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { fetchRemainingLabelsForTable, tableHasAnyCheckedIn, getTableCreatedTime } = require('./fetch_remaining_labels');
+const { fetchRemainingLabelsForTable, tableHasAnyCheckedIn, getTableCreatedTime, describeAirtableError } = require('./fetch_remaining_labels');
 const { matchShipmentName } = require('../shipment_matching');
 
 const AIRTABLE_API_KEY = process.env.AIRTABLE_API_KEY;
@@ -224,7 +224,7 @@ async function fetchRemainingLabelsForAllShipments() {
         try {
             payload = await fetchRemainingLabelsForTable(table.name);
         } catch (error) {
-            results.push({ shipment: table.name, items: null, hasAnyCheckedIn: null, error: error.message });
+            results.push({ shipment: table.name, items: null, hasAnyCheckedIn: null, error: describeAirtableError(error) });
             await delay(AIRTABLE_MIN_REQUEST_INTERVAL_MS);
             continue;
         }

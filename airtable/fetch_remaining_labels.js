@@ -12,6 +12,23 @@ if (!AIRTABLE_API_KEY) {
 
 const base = new Airtable({ apiKey: AIRTABLE_API_KEY }).base(AIRTABLE_BASE_ID);
 
+/* The airtable npm client makes its requests through node-fetch internally
+    (not Node's native fetch), and node-fetch's own error on a network-level
+    failure (ECONNRESET, socket hang up, DNS failure, etc.) embeds the full
+    request URL -- base ID, table name, and any filterByFormula/fields query
+    params -- e.g. "request to https://api.airtable.com/v0/<base>/<table>
+    ?filterByFormula=... failed, reason: connect ECONNRESET ...". That's not
+    something a Slack message should ever echo back. Callers that surface an
+    Airtable-sourced error to the user should route it through this first,
+    which reduces it to just the underlying reason (e.g. "ECONNRESET") when
+    that URL-leaking shape is detected, and otherwise leaves the message
+    untouched -- a real Airtable API error (bad formula, unknown field, auth)
+    already has its own clean, URL-free message. */
+function describeAirtableError(error) {
+    const match = /^request to .* failed, reason: (.*)$/.exec(error.message || '');
+    return match ? (error.code || match[1]) : error.message;
+}
+
 /* Queries the given shipment table for rows still needing labels printed and
     maps them into the { shipment, items: [{ sku, quantity }] } payload shape
     the print endpoint expects. `quantity` comes straight from the Labels
@@ -275,4 +292,4 @@ if (require.main === module) {
         });
 }
 
-module.exports = { fetchRemainingLabels, fetchRemainingLabelsForTable, fetchLabelsBySkuForTable, fetchProductNamesForTable, fetchNotCheckedInForTable, tableHasAnyCheckedIn, getTableCreatedTime };
+module.exports = { fetchRemainingLabels, fetchRemainingLabelsForTable, fetchLabelsBySkuForTable, fetchProductNamesForTable, fetchNotCheckedInForTable, tableHasAnyCheckedIn, getTableCreatedTime, describeAirtableError };

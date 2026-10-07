@@ -1,4 +1,4 @@
-const { fetchRemainingLabelsForTable, fetchLabelsBySkuForTable, fetchProductNamesForTable } = require('../airtable/fetch_remaining_labels');
+const { fetchRemainingLabelsForTable, fetchLabelsBySkuForTable, fetchProductNamesForTable, describeAirtableError } = require('../airtable/fetch_remaining_labels');
 const { findShipmentTable, isAllShipmentsQuery, SKU_TOKEN_PATTERN } = require('../airtable/shipment_lookup');
 const { submitTestPrintJob } = require('../print_service');
 const { setPendingPrint } = require('./print_confirmation');
@@ -66,7 +66,7 @@ async function resolveShipmentAndFetchRemaining({ shipmentRef }) {
         return { status: 'ok', shipment: payload.shipment, items: payload.items, note: resolved.note };
     } catch (error) {
         console.error('Failed to fetch remaining labels:', error.message);
-        return { status: 'error', message: error.message };
+        return { status: 'error', message: describeAirtableError(error) };
     }
 }
 
@@ -154,7 +154,7 @@ async function resolveSkuPrintRequest({ skus, shipmentRef }) {
         payload = await fetchLabelsBySkuForTable(resolved.tableName, requests.map((r) => r.sku));
     } catch (error) {
         console.error('Failed to fetch labels by SKU:', error.message);
-        return { status: 'error', message: error.message };
+        return { status: 'error', message: describeAirtableError(error) };
     }
 
     const notFound = payload.results.filter((r) => r.notFound).map((r) => r.sku);
@@ -344,7 +344,7 @@ async function resolveProductNameMatches({ productQuery, shipmentRef }) {
             return { status: 'no_names_available', shipment: resolved.tableName, note: resolved.note };
         }
         console.error('Failed to fetch product names:', error.message);
-        return { status: 'error', message: error.message };
+        return { status: 'error', message: describeAirtableError(error) };
     }
 
     if (payload.items.length === 0) {
