@@ -1,4 +1,5 @@
 const { isAllShipmentsQuery, fetchRemainingLabelsForAllShipments } = require('../airtable/shipment_lookup');
+const { fetchNotCheckedInForTable } = require('../airtable/fetch_remaining_labels');
 /* Reuses print_handlers.js's shipment resolution + error-reporting helpers
     rather than duplicating them -- status and print commands share the same
     "which shipment, what's remaining" logic, they just do different things
@@ -60,13 +61,37 @@ async function handleQueryShipmentStatus({ shipmentRef }, say, userId) {
     }
     await sayDisambiguationNoteIfAny(result, say, userId);
 
+    const sections = [];
     if (result.items.length === 0) {
-        await say(`<@${userId}> "${result.shipment}" has no remaining labels to print -- everything's already printed.`);
-        return;
+        sections.push(`"${result.shipment}" has no remaining labels to print -- everything's already printed.`);
+    } else {
+        const lines = result.items.map((item) => `• ${item.sku} — ${item.quantity}`).join('\n');
+        sections.push(`"${result.shipment}" has ${result.items.length} SKU(s) still needing labels:\n${lines}`);
     }
 
-    const lines = result.items.map((item) => `• ${item.sku} — ${item.quantity}`).join('\n');
-    await say(`<@${userId}> "${result.shipment}" has ${result.items.length} SKU(s) still needing labels:\n${lines}`);
+    /* A separate bucket from the remaining-labels one above -- checking in
+        and printing are different steps, so a SKU can be behind on either
+        independently. Queried separately (rather than folded into
+        resolveShipmentAndFetchRemaining) so the print handlers that also
+        share that function don't pay for a query they never display. */
+    let notCheckedIn;
+    try {
+        notCheckedIn = await fetchNotCheckedInForTable(result.shipment);
+    } catch (error) {
+        console.error('Failed to fetch not-checked-in SKUs:', error.message);
+        notCheckedIn = { items: null, unsupported: false, error: error.message };
+    }
+
+    if (notCheckedIn.unsupported) {
+        sections.push(`Can't check not-checked-in status for "${result.shipment}" -- this table doesn't track "Checked In".`);
+    } else if (notCheckedIn.error) {
+        sections.push(`Couldn't check not-checked-in SKUs: ${notCheckedIn.error}`);
+    } else if (notCheckedIn.items.length > 0) {
+        const lines = notCheckedIn.items.map((item) => `• ${item.sku}`).join('\n');
+        sections.push(`${notCheckedIn.items.length} SKU(s) not checked in yet:\n${lines}`);
+    }
+
+    await say(`<@${userId}> ${sections.join('\n\n')}`);
 }
 
 module.exports = { handleQueryShipmentStatus };

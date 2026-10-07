@@ -48,6 +48,50 @@ function fetchRemainingLabels() {
     return fetchRemainingLabelsForTable(SHIPMENT_TABLE);
 }
 
+/* Mirrors fetchRemainingLabelsForTable's shape but for rows that haven't
+    been checked in yet -- used by status_handlers.js to flag SKUs still
+    missing from the warehouse floor, as a bucket separate from "needs a
+    label printed" (checking in and printing are different steps, and a row
+    can be behind on either one independently). Some older shipment tables
+    (e.g. "Oct 2 Shipment") predate the Checked In field entirely and use a
+    different STATUS field instead -- Airtable throws a structured
+    UNKNOWN_FIELD_NAME error when filterByFormula references a field the
+    table doesn't have. Unlike referencing an unknown field in a `fields:`
+    selection list (which Airtable rejects as UNKNOWN_FIELD_NAME), a missing
+    field inside filterByFormula comes back as INVALID_FILTER_BY_FORMULA
+    with a message naming the field -- caught here and reported back as
+    `unsupported: true` rather than letting it bubble up as a generic fetch
+    error, so callers can skip the bucket with a note instead of failing
+    the whole status command over it. */
+async function fetchNotCheckedInForTable(tableName) {
+    const items = [];
+
+    try {
+        await base(tableName)
+            .select({
+                filterByFormula: 'NOT({Checked In})',
+                fields: ['SKU'],
+            })
+            .eachPage((records, fetchNextPage) => {
+                for (const record of records) {
+                    const sku = record.get('SKU');
+                    if (!sku) {
+                        continue;
+                    }
+                    items.push({ sku });
+                }
+                fetchNextPage();
+            });
+    } catch (error) {
+        if (error.error === 'INVALID_FILTER_BY_FORMULA' && /unknown field names/i.test(error.message)) {
+            return { shipment: tableName, items: null, unsupported: true };
+        }
+        throw error;
+    }
+
+    return { shipment: tableName, items, unsupported: false };
+}
+
 /* Looks up specific SKUs within a shipment table by exact name match
     (case-insensitively -- Airtable's own SKU casing is the source of truth,
     but callers (e.g. the LLM intent parser) may echo back whatever casing
@@ -213,4 +257,4 @@ if (require.main === module) {
         });
 }
 
-module.exports = { fetchRemainingLabels, fetchRemainingLabelsForTable, fetchLabelsBySkuForTable, fetchProductNamesForTable, getTableCreatedTime };
+module.exports = { fetchRemainingLabels, fetchRemainingLabelsForTable, fetchLabelsBySkuForTable, fetchProductNamesForTable, fetchNotCheckedInForTable, getTableCreatedTime };
