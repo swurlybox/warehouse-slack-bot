@@ -53,7 +53,7 @@ function setPendingPrint(userId, { shipment, items }) {
  * @param {string} text - The incoming message text.
  * @param {string} userId - Slack user ID who sent it.
  * @param {Function} say - Slack reply function (
- *   {@link https://docs.slack.dev/tools/bolt-js/concepts/message-sending}
+ *   {@link https://docs.slack.dev/tools/bolt-js/concepts/message-sending} 
  *   utility from Bolt).
  * @returns {Promise<boolean>} True if the message was consumed as a
  *   confirm/cancel reply (caller should stop routing); false otherwise,

@@ -54,13 +54,16 @@ function parseSelectionReply(text) {
 
     const parsed = [];
     for (const entry of entries) {
+        /* The part wrapped in (...) represents a capture group. */
         const match = entry.match(/^(\d+)\s*x\s*(\d+)$/i) ||
             entry.match(/^(\d+)$/);
         if (!match) {
             return null;
         }
         parsed.push({
-            index: Number(match[1]),
+            // match[1] and match[2] are the capture groups (...) in the regex.
+            index: Number(match[1]), // The numbered option
+            // the xN quantity, or undefined if not specified.
             quantity: match[2] !== undefined ? Number(match[2]) : undefined,
         });
     }
@@ -75,7 +78,7 @@ function parseSelectionReply(text) {
  * @param {string} text - The incoming message text.
  * @param {string} userId - Slack user ID who sent it.
  * @param {Function} say - Slack reply function (
- *   {@link https://docs.slack.dev/tools/bolt-js/concepts/message-sending}
+ *   {@link https://docs.slack.dev/tools/bolt-js/concepts/message-sending} 
  *   utility from Bolt).
  * @param {Function} onSelect - Called with `({shipment, isTest, items},
  *   say, userId)` once a valid selection resolves; passed in by the

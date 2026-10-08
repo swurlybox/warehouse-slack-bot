@@ -687,7 +687,7 @@ async function handleProductNameSearch(
  * @param {{productQuery: string, shipmentRef: string}} args - The product
  *   description and shipment reference.
  * @param {Function} say - Slack reply function (
- *   {@link https://docs.slack.dev/tools/bolt-js/concepts/message-sending}
+ *   {@link https://docs.slack.dev/tools/bolt-js/concepts/message-sending} 
  *   utility from Bolt).
  * @param {string} userId - Slack user ID who asked.
  * @returns {Promise<void>}
@@ -712,7 +712,7 @@ async function handlePrintByProductName(
  * @param {{productQuery: string, shipmentRef: string}} args - The product
  *   description and shipment reference.
  * @param {Function} say - Slack reply function (
- *   {@link https://docs.slack.dev/tools/bolt-js/concepts/message-sending}
+ *   {@link https://docs.slack.dev/tools/bolt-js/concepts/message-sending} 
  *   utility from Bolt).
  * @param {string} userId - Slack user ID who asked.
  * @returns {Promise<void>}
@@ -739,7 +739,7 @@ async function handleTestPrintByProductName(
  * @param {{shipment: string, isTest: boolean, items: Array<{sku: string,
  *   quantity?: number}>}} selection - The resolved selection.
  * @param {Function} say - Slack reply function (
- *   {@link https://docs.slack.dev/tools/bolt-js/concepts/message-sending}
+ *   {@link https://docs.slack.dev/tools/bolt-js/concepts/message-sending} 
  *   utility from Bolt).
  * @param {string} userId - Slack user ID who made the selection.
  * @returns {Promise<void>}

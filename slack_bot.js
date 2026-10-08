@@ -89,7 +89,7 @@ const HELP_TEXT = [
     '• *help* -- shows this message.',
 ].join('\n');
 
-// Fails closed: an empty list means nobody is authorized, not everyone
+// Fails closed: an empty list means nobody is authorized
 // -- a forgotten allowlist should break loudly.
 const AUTHORIZED_USER_IDS = new Set(
     (process.env.AUTHORIZED_USER_IDS || '')
