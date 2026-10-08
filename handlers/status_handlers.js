@@ -65,8 +65,8 @@ function buildStatusRowBlock(row) {
  *   page's worth).
  * @param {number} args.page - Zero-based page index to render.
  * @param {number} args.totalPages - Total page count.
- * @returns {{text: string, blocks: Array<object>}} A ({@link
- *   https://api.slack.com/block-kit|Slack Block Kit}) payload.
+ * @returns {{text: string, blocks: Array<object>}} A (
+ *   {@link https://docs.slack.dev/block-kit/|Slack Block Kit}) payload.
  */
 function buildStatusPageBlocks({ shipment, userId, rows, page, totalPages }) {
     const start = page * STATUS_PAGE_SIZE;
@@ -183,9 +183,9 @@ async function handleQueryAllShipmentsStatus(say, userId) {
  *
  * @param {{shipmentRef: string}} args - The shipment reference from
  *   intent parsing.
- * @param {Function} say - Slack reply function ({@link
- *   https://api.slack.com/methods/chat.postMessage|chat.postMessage}
- *   wrapper from Bolt).
+ * @param {Function} say - Slack reply function (
+ *   {@link https://docs.slack.dev/tools/bolt-js/concepts/message-sending}
+ *   utility from Bolt).
  * @param {string} userId - Slack user ID who asked.
  * @returns {Promise<void>}
  */

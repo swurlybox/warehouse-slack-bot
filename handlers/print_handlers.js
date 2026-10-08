@@ -40,9 +40,9 @@ async function resolveShipmentTableName(shipmentRef) {
  *
  * @param {{note?: string}} result - A resolution result that may carry a
  *   note.
- * @param {Function} say - Slack reply function ({@link
- *   https://api.slack.com/methods/chat.postMessage|chat.postMessage}
- *   wrapper from Bolt).
+ * @param {Function} say - Slack reply function (
+ *   {@link https://docs.slack.dev/tools/bolt-js/concepts/message-sending}
+ *   utility from Bolt).
  * @param {string} userId - Slack user ID to mention.
  * @returns {Promise<void>}
  */
@@ -95,9 +95,9 @@ async function resolveShipmentAndFetchRemaining({ shipmentRef }) {
  * Reports a non-'ok' resolveShipmentAndFetchRemaining result to the user.
  *
  * @param {object} result - The resolution result to report.
- * @param {Function} say - Slack reply function ({@link
- *   https://api.slack.com/methods/chat.postMessage|chat.postMessage}
- *   wrapper from Bolt).
+ * @param {Function} say - Slack reply function (
+ *   {@link https://docs.slack.dev/tools/bolt-js/concepts/message-sending}
+ *   utility from Bolt).
  * @param {string} userId - Slack user ID to mention.
  * @param {string} exampleCommand - Example phrasing for the error reply.
  * @returns {Promise<boolean>} True if an error was reported (caller
@@ -266,9 +266,9 @@ function formatSkuFlags(item) {
  * sending them to a physical printer.
  *
  * @param {{shipmentRef: string}} args - The shipment reference.
- * @param {Function} say - Slack reply function ({@link
- *   https://api.slack.com/methods/chat.postMessage|chat.postMessage}
- *   wrapper from Bolt).
+ * @param {Function} say - Slack reply function (
+ *   {@link https://docs.slack.dev/tools/bolt-js/concepts/message-sending}
+ *   utility from Bolt).
  * @param {string} userId - Slack user ID who asked.
  * @returns {Promise<void>}
  */
@@ -322,9 +322,9 @@ async function handleTestPrintRemainingLabels({ shipmentRef }, say, userId) {
  * change).
  *
  * @param {{shipmentRef: string}} args - The shipment reference.
- * @param {Function} say - Slack reply function ({@link
- *   https://api.slack.com/methods/chat.postMessage|chat.postMessage}
- *   wrapper from Bolt).
+ * @param {Function} say - Slack reply function (
+ *   {@link https://docs.slack.dev/tools/bolt-js/concepts/message-sending}
+ *   utility from Bolt).
  * @param {string} userId - Slack user ID who asked.
  * @returns {Promise<void>}
  */
@@ -365,9 +365,9 @@ async function handlePrintRemainingLabels({ shipmentRef }, say, userId) {
  * @param {Array<{sku: string, quantity?: number}>} args.skus - SKUs with
  *   an optional per-SKU quantity override.
  * @param {string} args.shipmentRef - The shipment reference.
- * @param {Function} say - Slack reply function ({@link
- *   https://api.slack.com/methods/chat.postMessage|chat.postMessage}
- *   wrapper from Bolt).
+ * @param {Function} say - Slack reply function (
+ *   {@link https://docs.slack.dev/tools/bolt-js/concepts/message-sending}
+ *   utility from Bolt).
  * @param {string} userId - Slack user ID who asked.
  * @returns {Promise<void>}
  */
@@ -419,9 +419,9 @@ async function handleTestPrintSpecificSkus({ skus, shipmentRef }, say, userId) {
  * @param {Array<{sku: string, quantity?: number}>} args.skus - SKUs with
  *   an optional per-SKU quantity override.
  * @param {string} args.shipmentRef - The shipment reference.
- * @param {Function} say - Slack reply function ({@link
- *   https://api.slack.com/methods/chat.postMessage|chat.postMessage}
- *   wrapper from Bolt).
+ * @param {Function} say - Slack reply function (
+ *   {@link https://docs.slack.dev/tools/bolt-js/concepts/message-sending}
+ *   utility from Bolt).
  * @param {string} userId - Slack user ID who asked.
  * @returns {Promise<void>}
  */
@@ -584,9 +584,9 @@ async function sayProductMatchError(result, say, userId, exampleCommand) {
  * @param {string} args.query - The user's product query, for the header.
  * @param {Array<{sku: string, productName: string, quantity?: number,
  *   imageUrl?: string}>} args.candidates - Ranked candidates to render.
- * @returns {{text: string, blocks: Array<object>}} A ({@link
- *   https://api.slack.com/block-kit|Slack Block Kit}) payload: section
- *   blocks with image accessories.
+ * @returns {{text: string, blocks: Array<object>}} A (
+ *   {@link https://docs.slack.dev/block-kit/|Slack Block Kit}) payload:
+ *   section blocks with image accessories.
  */
 function buildProductCandidateBlocks({ userId, shipment, query, candidates }) {
     const summaryLines = candidates.map((candidate, i) => {
@@ -686,9 +686,9 @@ async function handleProductNameSearch(
  *
  * @param {{productQuery: string, shipmentRef: string}} args - The product
  *   description and shipment reference.
- * @param {Function} say - Slack reply function ({@link
- *   https://api.slack.com/methods/chat.postMessage|chat.postMessage}
- *   wrapper from Bolt).
+ * @param {Function} say - Slack reply function (
+ *   {@link https://docs.slack.dev/tools/bolt-js/concepts/message-sending}
+ *   utility from Bolt).
  * @param {string} userId - Slack user ID who asked.
  * @returns {Promise<void>}
  */
@@ -711,9 +711,9 @@ async function handlePrintByProductName(
  *
  * @param {{productQuery: string, shipmentRef: string}} args - The product
  *   description and shipment reference.
- * @param {Function} say - Slack reply function ({@link
- *   https://api.slack.com/methods/chat.postMessage|chat.postMessage}
- *   wrapper from Bolt).
+ * @param {Function} say - Slack reply function (
+ *   {@link https://docs.slack.dev/tools/bolt-js/concepts/message-sending}
+ *   utility from Bolt).
  * @param {string} userId - Slack user ID who asked.
  * @returns {Promise<void>}
  */
@@ -738,9 +738,9 @@ async function handleTestPrintByProductName(
  *
  * @param {{shipment: string, isTest: boolean, items: Array<{sku: string,
  *   quantity?: number}>}} selection - The resolved selection.
- * @param {Function} say - Slack reply function ({@link
- *   https://api.slack.com/methods/chat.postMessage|chat.postMessage}
- *   wrapper from Bolt).
+ * @param {Function} say - Slack reply function (
+ *   {@link https://docs.slack.dev/tools/bolt-js/concepts/message-sending}
+ *   utility from Bolt).
  * @param {string} userId - Slack user ID who made the selection.
  * @returns {Promise<void>}
  */

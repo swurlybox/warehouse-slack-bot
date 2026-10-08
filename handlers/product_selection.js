@@ -74,9 +74,9 @@ function parseSelectionReply(text) {
  *
  * @param {string} text - The incoming message text.
  * @param {string} userId - Slack user ID who sent it.
- * @param {Function} say - Slack reply function ({@link
- *   https://api.slack.com/methods/chat.postMessage|chat.postMessage}
- *   wrapper from Bolt).
+ * @param {Function} say - Slack reply function (
+ *   {@link https://docs.slack.dev/tools/bolt-js/concepts/message-sending}
+ *   utility from Bolt).
  * @param {Function} onSelect - Called with `({shipment, isTest, items},
  *   say, userId)` once a valid selection resolves; passed in by the
  *   caller (slack_bot.js) to avoid a require cycle with

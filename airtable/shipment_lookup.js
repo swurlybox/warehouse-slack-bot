@@ -55,8 +55,8 @@ function stripSlackMentions(text) {
  * tables are added regularly.
  *
  * @returns {Promise<Array<{id: string, name: string}>>} Table names,
- *   from the ({@link
- *   https://airtable.com/developers/web/api/list-tables|list-tables})
+ *   from the (
+ *   {@link https://airtable.com/developers/web/api/get-base-schema|schema})
  *   endpoint.
  */
 async function listShipmentTables() {
