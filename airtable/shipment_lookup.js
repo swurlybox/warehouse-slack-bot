@@ -11,7 +11,7 @@ const {
     getTableCreatedTime,
     describeAirtableError,
 } = require('./fetch_remaining_labels');
-const { matchShipmentName } = require('../shipment_matching');
+const { matchShipmentName } = require('../llm/shipment_matching');
 
 const AIRTABLE_API_KEY = process.env.AIRTABLE_API_KEY;
 const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID || 'app5sCWXMPQpuJodj';

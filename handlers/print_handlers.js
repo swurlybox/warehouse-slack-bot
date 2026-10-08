@@ -17,7 +17,7 @@ const {
 const { submitTestPrintJob } = require('../print_service');
 const { setPendingPrint } = require('./print_confirmation');
 const { setPendingProductSelection } = require('./product_selection');
-const { rankProductMatches } = require('../product_matching');
+const { rankProductMatches } = require('../llm/product_matching');
 
 // No default shipment: a renamed table broke a fixed fallback before.
 async function resolveShipmentTableName(shipmentRef) {

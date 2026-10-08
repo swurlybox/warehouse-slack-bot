@@ -6,7 +6,7 @@
  */
 require('dotenv').config();
 const { App } = require('@slack/bolt');
-const { parseIntent, extractShipmentId } = require('./intent_parser');
+const { parseIntent, extractShipmentId } = require('./llm/intent_parser');
 const {
     handlePendingPrintConfirmation,
 } = require('./handlers/print_confirmation');
