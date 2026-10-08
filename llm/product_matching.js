@@ -1,5 +1,5 @@
 /**
- * @module product_matching
+ * @module llm/product_matching
  * LLM-based ranking of a shipment's product rows against a free-text
  * product-name query (e.g. "the kikkoman soy sauce").
  */

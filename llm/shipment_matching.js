@@ -1,5 +1,5 @@
 /**
- * @module shipment_matching
+ * @module llm/shipment_matching
  * LLM fallback for fuzzy shipment-table-name matching, used only when
  * exact token matching (in airtable/shipment_lookup.js) finds nothing.
  */
