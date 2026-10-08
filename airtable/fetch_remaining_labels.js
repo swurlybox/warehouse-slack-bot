@@ -12,56 +12,58 @@ const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID || 'app5sCWXMPQpuJodj';
 const SHIPMENT_TABLE = 'Next Shipment';
 
 if (!AIRTABLE_API_KEY) {
-    console.error('Missing AIRTABLE_API_KEY environment variable. Set it in .env (see .env.example).');
+    console.error(
+        'Missing AIRTABLE_API_KEY environment variable. ' +
+        'Set it in .env (see .env.example).'
+    );
     process.exit(1);
 }
 
 const base = new Airtable({ apiKey: AIRTABLE_API_KEY }).base(AIRTABLE_BASE_ID);
 
-/* The airtable npm client makes its requests through node-fetch internally
-    (not Node's native fetch), and node-fetch's own error on a network-level
-    failure (ECONNRESET, socket hang up, DNS failure, etc.) embeds the full
-    request URL -- base ID, table name, and any filterByFormula/fields query
-    params -- e.g. "request to https://api.airtable.com/v0/<base>/<table>
-    ?filterByFormula=... failed, reason: connect ECONNRESET ...". That's not
-    something a Slack message should ever echo back.
-    Separately, a handful of older shipment tables predate the Checked In
-    field entirely (see fetchNotCheckedInForTable above) -- any query that
-    references it throws a raw, developer-facing Airtable error on those
-    tables, either INVALID_FILTER_BY_FORMULA ("The formula for filtering
-    records is invalid: Unknown field names: checked in", from a
-    filterByFormula string) or UNKNOWN_FIELD_NAME (from a fields: array
-    entry). Both are just as inappropriate to show a warehouse worker as
-    the URL leak above -- this bot's Slack audience isn't technical, so
-    "formula", "field", and "Airtable" aren't words that mean anything
-    useful to them, and "schema drift" (what this actually is, internally)
-    isn't either.
-    Callers that surface an Airtable-sourced error to the user should
-    route it through this first, which rewrites all of the above into
-    plain language and otherwise leaves the message untouched -- most
-    other real Airtable API errors (auth, rate limit) already have a
-    reasonably plain message of their own. */
+/**
+ * Rewrites a raw Airtable/node-fetch error into a message safe to show a
+ * non-technical Slack audience: a network failure that would otherwise
+ * leak the full request URL is reduced to just the reason (e.g.
+ * "ECONNRESET"), and the schema-drift errors from tables missing the
+ * Checked In field are rewritten into plain language. Every call site
+ * that surfaces an Airtable error to Slack should route through this.
+ *
+ * @param {Error & {error?: string, code?: string}} error - The raw error
+ *   from an ({@link https://airtable.com/developers/web/api/errors|
+ *   Airtable API}) call.
+ * @returns {string} A Slack-safe error message.
+ */
 function describeAirtableError(error) {
-    const networkMatch = /^request to .* failed, reason: (.*)$/.exec(error.message || '');
+    const networkMatch = /^request to .* failed, reason: (.*)$/.exec(
+        error.message || ''
+    );
     if (networkMatch) {
         return error.code || networkMatch[1];
     }
 
     const isMissingFieldError = error.error === 'UNKNOWN_FIELD_NAME' ||
-        (error.error === 'INVALID_FILTER_BY_FORMULA' && /unknown field names/i.test(error.message || ''));
+        (error.error === 'INVALID_FILTER_BY_FORMULA' &&
+            /unknown field names/i.test(error.message || ''));
     if (isMissingFieldError) {
-        return "this shipment was set up differently than newer ones, so I can't check it right now -- let whoever manages the shipment sheet know.";
+        return (
+            "this shipment was set up differently than newer ones, so " +
+            "I can't check it right now -- let whoever manages the " +
+            "shipment sheet know."
+        );
     }
 
     return error.message;
 }
 
-/* Queries the given shipment table for rows still needing labels printed and
-    maps them into the { shipment, items: [{ sku, quantity }] } payload shape
-    the print endpoint expects. `quantity` comes straight from the Labels
-    formula field (ASINS/Case x Cases) -- already computed. Every shipment
-    table (past or "Next Shipment") shares this same SKU/Labels/Label Printed
-    layout, so one function serves all of them. */
+/**
+ * Fetches a shipment table's rows that are checked in but not yet
+ * printed.
+ *
+ * @param {string} tableName - The Airtable shipment table name.
+ * @returns {Promise<{shipment: string, items: Array<{sku: string,
+ *   quantity: number}>}>}
+ */
 async function fetchRemainingLabelsForTable(tableName) {
     const items = [];
 
@@ -76,7 +78,10 @@ async function fetchRemainingLabelsForTable(tableName) {
                 const quantity = record.get('Labels');
 
                 if (!sku || !Number.isFinite(quantity)) {
-                    console.warn(`Skipping record ${record.id}: missing SKU or Labels value.`);
+                    console.warn(
+                        `Skipping record ${record.id}: ` +
+                        `missing SKU or Labels value.`
+                    );
                     continue;
                 }
 
@@ -88,25 +93,28 @@ async function fetchRemainingLabelsForTable(tableName) {
     return { shipment: tableName, items };
 }
 
+/**
+ * Fetches the default shipment table's ("Next Shipment") remaining
+ * labels.
+ *
+ * @returns {Promise<{shipment: string, items: Array<{sku: string,
+ *   quantity: number}>}>}
+ */
 function fetchRemainingLabels() {
     return fetchRemainingLabelsForTable(SHIPMENT_TABLE);
 }
 
-/* Mirrors fetchRemainingLabelsForTable's shape but for rows that haven't
-    been checked in yet -- used by status_handlers.js to flag SKUs still
-    missing from the warehouse floor, as a bucket separate from "needs a
-    label printed" (checking in and printing are different steps, and a row
-    can be behind on either one independently). Some older shipment tables
-    (e.g. "Oct 2 Shipment") predate the Checked In field entirely and use a
-    different STATUS field instead -- Airtable throws a structured
-    UNKNOWN_FIELD_NAME error when filterByFormula references a field the
-    table doesn't have. Unlike referencing an unknown field in a `fields:`
-    selection list (which Airtable rejects as UNKNOWN_FIELD_NAME), a missing
-    field inside filterByFormula comes back as INVALID_FILTER_BY_FORMULA
-    with a message naming the field -- caught here and reported back as
-    `unsupported: true` rather than letting it bubble up as a generic fetch
-    error, so callers can skip the bucket with a note instead of failing
-    the whole status command over it. */
+/**
+ * Fetches a shipment table's rows that haven't been checked in yet -- a
+ * separate bucket from "needs a label printed", since checking in and
+ * printing are independent steps.
+ *
+ * @param {string} tableName - The Airtable shipment table name.
+ * @returns {Promise<{shipment: string, items: Array<{sku: string}> |
+ *   null, unsupported: boolean}>} `unsupported: true` (with `items:
+ *   null`) when the table predates the Checked In field entirely,
+ *   instead of throwing -- callers can skip this bucket gracefully.
+ */
 async function fetchNotCheckedInForTable(tableName) {
     const items = [];
 
@@ -127,7 +135,9 @@ async function fetchNotCheckedInForTable(tableName) {
                 fetchNextPage();
             });
     } catch (error) {
-        if (error.error === 'INVALID_FILTER_BY_FORMULA' && /unknown field names/i.test(error.message)) {
+        const isMissingField = error.error === 'INVALID_FILTER_BY_FORMULA' &&
+            /unknown field names/i.test(error.message);
+        if (isMissingField) {
             return { shipment: tableName, items: null, unsupported: true };
         }
         throw error;
@@ -136,21 +146,25 @@ async function fetchNotCheckedInForTable(tableName) {
     return { shipment: tableName, items, unsupported: false };
 }
 
-/* Looks up specific SKUs within a shipment table by exact name match
-    (case-insensitively -- Airtable's own SKU casing is the source of truth,
-    but callers (e.g. the LLM intent parser) may echo back whatever casing
-    the user actually typed, which is often lowercase in casual chat),
-    regardless of Label Printed / Checked In status -- used for targeted
-    reprints, where the whole point is printing something outside the normal
-    remaining-labels filter (e.g. a damaged label). Callers are expected to
-    have already validated `skus` against SKU_TOKEN_PATTERN (shipment_lookup.js)
-    before this builds a filterByFormula out of them. Returns one result per
-    requested SKU: either its quantity plus flags for whether it's already
-    been printed / not yet checked in, or { notFound: true } if no row in the
-    table matches that SKU at all. */
+/**
+ * Looks up specific SKUs within a shipment table by exact
+ * (case-insensitive) match, regardless of print/check-in status -- used
+ * for targeted reprints, which intentionally bypass the normal
+ * remaining-labels filter.
+ *
+ * @param {string} tableName - The Airtable shipment table name.
+ * @param {string[]} skus - SKUs to look up (already validated against
+ *   SKU_TOKEN_PATTERN by the caller).
+ * @returns {Promise<{shipment: string, results: Array<{sku: string,
+ *   quantity?: number, alreadyPrinted?: boolean, notCheckedIn?: boolean,
+ *   notFound?: true}>}>} One result per requested SKU, in the same
+ *   order.
+ */
 async function fetchLabelsBySkuForTable(tableName, skus) {
     const uniqueSkus = [...new Set(skus)];
-    const formula = `OR(${uniqueSkus.map((sku) => `LOWER({SKU}) = LOWER("${sku}")`).join(', ')})`;
+    const formula = `OR(${uniqueSkus
+        .map((sku) => `LOWER({SKU}) = LOWER("${sku}")`)
+        .join(', ')})`;
     const found = new Map();
 
     await base(tableName)
@@ -164,16 +178,15 @@ async function fetchLabelsBySkuForTable(tableName, skus) {
                 const quantity = record.get('Labels');
 
                 if (!sku || !Number.isFinite(quantity)) {
-                    console.warn(`Skipping record ${record.id}: missing SKU or Labels value.`);
+                    console.warn(
+                        `Skipping record ${record.id}: ` +
+                        `missing SKU or Labels value.`
+                    );
                     continue;
                 }
 
-                /* Keyed by uppercase, not the raw stored value, so the
-                    lookup below matches regardless of which casing the
-                    request came in with -- the formula match is already
-                    case-insensitive, but this Map lookup is a separate,
-                    local case-sensitive comparison that needs the same
-                    normalization or the formula fix alone doesn't help. */
+                // Keyed by uppercase so the lookup below matches
+                // regardless of the request's casing.
                 found.set(sku.toUpperCase(), {
                     sku,
                     quantity,
@@ -184,57 +197,43 @@ async function fetchLabelsBySkuForTable(tableName, skus) {
             fetchNextPage();
         });
 
-    const results = uniqueSkus.map((sku) => found.get(sku.toUpperCase()) || { sku, notFound: true });
+    const results = uniqueSkus.map((sku) => {
+        return found.get(sku.toUpperCase()) || { sku, notFound: true };
+    });
     return { shipment: tableName, results };
 }
 
-/* The field holding a row's human-readable product name -- a lookup tied
-    to the master product catalog table (`Imported Data images, pack size
-    and FNSKU copy`), hence the "2" (there's an unused "1" counterpart from
-    an earlier lookup setup). Not every shipment table has this field --
-    a handful of older tables (e.g. "March 28 Shipment") predate it
-    entirely -- and it's a multipleLookupValues field, so Airtable always
-    returns it as an array even though the link is to one record. */
+// Lookup to the master product catalog table; missing entirely on a
+// handful of older shipment tables.
 const PRODUCT_NAME_FIELD = 'Name. 名字. Nombre. 2';
 
-/* Same lookup pattern as PRODUCT_NAME_FIELD (pulled in from the master
-    catalog table's own Image attachment field), with the same caveats --
-    missing entirely on a handful of older shipment tables, and a
-    multipleLookupValues field, so it comes back as an array of Airtable
-    attachment objects (each with .url and .thumbnails.{small,large,full}.url)
-    even though there's normally just one. */
+// Same lookup pattern/caveats as PRODUCT_NAME_FIELD; comes back as an
+// array of Airtable attachment objects.
 const PRODUCT_IMAGE_FIELD = 'Image，图片 (from Product Name Lookup)';
 
-/* An attachment's own `url` is a full-resolution original (e.g. 1500px on
-    the long edge) -- too large for a quick visual check in a Slack
-    thumbnail and wasteful to transfer for that purpose. `large` (~512px)
-    is plenty to confirm "does this look like the right product" at a
-    glance; falls back down the chain for an attachment missing that
-    particular thumbnail size rather than showing nothing. */
+// `large` (~512px) is enough for a quick visual check and smaller than
+// the full-resolution original; falls back down the chain if missing.
 function pickThumbnailUrl(attachment) {
-    return attachment?.thumbnails?.large?.url || attachment?.thumbnails?.small?.url || attachment?.url || null;
+    return attachment?.thumbnails?.large?.url ||
+        attachment?.thumbnails?.small?.url ||
+        attachment?.url ||
+        null;
 }
 
-/* Fetches every SKU in a shipment table paired with its human-readable
-    product name, default print quantity, and a thumbnail image URL, for
-    fuzzy name-based matching and display (see
-    handlers/print_handlers.js's resolveProductNameMatches and
-    formatProductCandidateList). Labels and the image come along for free
-    -- the table is already being fully paginated for name-matching, so
-    there's no extra request for either. Deliberately still doesn't fetch
-    Label Printed/Checked In here -- that data (and the authoritative
-    quantity, re-checked in case anything changed) gets fetched fresh via
-    fetchLabelsBySkuForTable once the user actually picks a SKU, the same
-    as any other targeted-SKU print; the quantity shown here is only ever
-    a preview.
-    Rows with no name at all -- the field is missing on this table
-    entirely, or just this row's catalog link isn't populated -- are
-    dropped rather than surfaced as an unmatchable candidate. If every row
-    comes back empty, the table simply doesn't support name-based search;
-    callers should treat that as a distinct case; it's not "no products in
-    this shipment". A row missing a valid Labels value or an image still
-    counts as a candidate (quantity/imageUrl come back null) -- those are
-    purely display gaps, not a reason to exclude it from matching. */
+/**
+ * Fetches every SKU in a shipment table paired with its product name,
+ * default print quantity, and thumbnail image URL, for fuzzy name-based
+ * matching and display. Rows with no product name (the field is missing
+ * on this table, or just this row's catalog link is empty) are dropped
+ * rather than surfaced as unmatchable -- an empty result means the table
+ * doesn't support name-based search at all, not "no products in this
+ * shipment".
+ *
+ * @param {string} tableName - The Airtable shipment table name.
+ * @returns {Promise<{shipment: string, items: Array<{sku: string,
+ *   productName: string, quantity: number | null, imageUrl: string |
+ *   null}>}>}
+ */
 async function fetchProductNamesForTable(tableName) {
     const items = [];
 
@@ -246,7 +245,9 @@ async function fetchProductNamesForTable(tableName) {
             for (const record of records) {
                 const sku = record.get('SKU');
                 const nameLookup = record.get(PRODUCT_NAME_FIELD);
-                const productName = Array.isArray(nameLookup) && nameLookup.length > 0 ? nameLookup[0] : null;
+                const hasName = Array.isArray(nameLookup) &&
+                    nameLookup.length > 0;
+                const productName = hasName ? nameLookup[0] : null;
 
                 if (!sku || !productName) {
                     continue;
@@ -254,7 +255,11 @@ async function fetchProductNamesForTable(tableName) {
 
                 const quantity = record.get('Labels');
                 const imageLookup = record.get(PRODUCT_IMAGE_FIELD);
-                const imageUrl = Array.isArray(imageLookup) && imageLookup.length > 0 ? pickThumbnailUrl(imageLookup[0]) : null;
+                const hasImage = Array.isArray(imageLookup) &&
+                    imageLookup.length > 0;
+                const imageUrl = hasImage
+                    ? pickThumbnailUrl(imageLookup[0])
+                    : null;
 
                 items.push({
                     sku,
@@ -269,16 +274,16 @@ async function fetchProductNamesForTable(tableName) {
     return { shipment: tableName, items };
 }
 
-/* Returns the createdTime (a Date) of an arbitrary record in the table, as
-    a cheap proxy for "when was this shipment set up" -- used by
-    shipment_lookup.js to break ties when more than one shipment table
-    matches a name query. Airtable's metadata API doesn't expose a
-    table-level creation date at all; a record's own createdTime is the
-    closest real signal available, and unlike a shipment table's name
-    (which never includes a year, e.g. "Oct 2 Shipment"), it carries the
-    actual year -- which is exactly what distinguishes two same-looking
-    shipment names from different years. Returns null for an empty table
-    (nothing to sample). */
+/**
+ * Samples one record's createdTime as a proxy for "when was this
+ * shipment set up" -- used to break ties when more than one shipment
+ * table matches a name query (a table's own name never includes a year,
+ * but a record's createdTime does).
+ *
+ * @param {string} tableName - The Airtable shipment table name.
+ * @returns {Promise<Date | null>} The sampled createdTime, or null for
+ *   an empty table.
+ */
 async function getTableCreatedTime(tableName) {
     const records = await base(tableName).select({ maxRecords: 1 }).firstPage();
     if (records.length === 0) {
@@ -287,18 +292,28 @@ async function getTableCreatedTime(tableName) {
     return new Date(records[0]._rawJson.createdTime);
 }
 
-/* Only run as a CLI script when invoked directly (`node fetch_remaining_labels.js`
-    or `npm run fetch-remaining-labels`) -- when required as a module (e.g. by
-    slack_bot.js) this just exports the function below. */
+// CLI entry point (`node fetch_remaining_labels.js`); no-op when
+// required as a module.
 if (require.main === module) {
     fetchRemainingLabels()
         .then((payload) => {
             console.log(JSON.stringify(payload, null, 2));
         })
         .catch((error) => {
-            console.error('Failed to fetch remaining labels from Airtable:', error.message);
+            console.error(
+                'Failed to fetch remaining labels from Airtable:',
+                error.message
+            );
             process.exit(1);
         });
 }
 
-module.exports = { fetchRemainingLabels, fetchRemainingLabelsForTable, fetchLabelsBySkuForTable, fetchProductNamesForTable, fetchNotCheckedInForTable, getTableCreatedTime, describeAirtableError };
+module.exports = {
+    fetchRemainingLabels,
+    fetchRemainingLabelsForTable,
+    fetchLabelsBySkuForTable,
+    fetchProductNamesForTable,
+    fetchNotCheckedInForTable,
+    getTableCreatedTime,
+    describeAirtableError,
+};

@@ -4,27 +4,31 @@
  * not-checked-in rows, with product name/image) and the all-shipments
  * overview.
  */
-const { isAllShipmentsQuery, fetchRemainingLabelsForAllShipments } = require('../airtable/shipment_lookup');
-const { fetchNotCheckedInForTable, fetchProductNamesForTable, describeAirtableError } = require('../airtable/fetch_remaining_labels');
+const {
+    isAllShipmentsQuery,
+    fetchRemainingLabelsForAllShipments,
+} = require('../airtable/shipment_lookup');
+const {
+    fetchNotCheckedInForTable,
+    fetchProductNamesForTable,
+    describeAirtableError,
+} = require('../airtable/fetch_remaining_labels');
 const { setStatusPageCache } = require('./status_pagination');
-/* Reuses print_handlers.js's shipment resolution + error-reporting helpers
-    rather than duplicating them -- status and print commands share the same
-    "which shipment, what's remaining" logic, they just do different things
-    with the result. */
-const { resolveShipmentAndFetchRemaining, sayShipmentResolutionError, sayDisambiguationNoteIfAny } = require('./print_handlers');
+// Shares print_handlers.js's shipment resolution + error-reporting
+// helpers rather than duplicating them.
+const {
+    resolveShipmentAndFetchRemaining,
+    sayShipmentResolutionError,
+    sayDisambiguationNoteIfAny,
+} = require('./print_handlers');
 
-/* Rows per paginated status page -- small enough that a page (even with a
-    thumbnail per row) doesn't itself become the wall of text/images this
-    feature exists to avoid, large enough that a ~50-SKU shipment doesn't
-    turn into tedious clicking. Also well under Slack's 50-block-per-message
-    ceiling once header/divider/footer/button overhead is added. */
+// Small enough to avoid a wall of images per page, large enough that a
+// ~50-SKU shipment isn't tedious to click through; comfortably under
+// Slack's 50-block-per-message limit.
 const STATUS_PAGE_SIZE = 8;
 
-/* "Unknown product"/no accessory is the deliberate fallback when a row's
-    product-name lookup is empty or the table has no such field at all
-    (see the enrichment try/catch in handleQueryShipmentStatus below) --
-    the row still renders with its SKU and status, it just can't show a
-    name or image it doesn't have. */
+// "Unknown product"/no accessory is the deliberate fallback when a row
+// has no product-name lookup at all.
 function formatStatusRowText(row) {
     const nameLine = `*${row.sku}* — ${row.productName || 'Unknown product'}`;
     const detailLine = row.reason === 'remaining'
@@ -39,40 +43,70 @@ function buildStatusRowBlock(row) {
         text: { type: 'mrkdwn', text: formatStatusRowText(row) },
     };
     if (row.imageUrl) {
-        block.accessory = { type: 'image', image_url: row.imageUrl, alt_text: (row.productName || row.sku).slice(0, 2000) };
+        block.accessory = {
+            type: 'image',
+            image_url: row.imageUrl,
+            alt_text: (row.productName || row.sku).slice(0, 2000),
+        };
     }
     return block;
 }
 
-/* Renders one page of a shipment's "needs attention" rows (remaining-to-print
-    + not-checked-in, already joined with product name/image where
-    available -- see handleQueryShipmentStatus) as Block Kit, with
-    Next/Previous buttons when there's more than one page. Shared by the
-    first render below and every subsequent button click in slack_bot.js's
-    status_page_nav handler, so the two call sites can never render
-    differently -- both just need `rows` (the full joined list) and a page
-    number, not a fresh Airtable fetch. */
+/**
+ * Renders one page of a shipment's "needs attention" rows as Block Kit,
+ * with Next/Previous buttons when there's more than one page. Shared by
+ * the first render and every subsequent button click (slack_bot.js's
+ * status_page_nav handler), so both always render identically.
+ *
+ * @param {object} args
+ * @param {string} args.shipment - Shipment table name.
+ * @param {string} args.userId - Slack user ID to mention in the header.
+ * @param {Array<object>} args.rows - The full joined row list (every
+ *   page's worth).
+ * @param {number} args.page - Zero-based page index to render.
+ * @param {number} args.totalPages - Total page count.
+ * @returns {{text: string, blocks: Array<object>}} A ({@link
+ *   https://api.slack.com/block-kit|Slack Block Kit}) payload.
+ */
 function buildStatusPageBlocks({ shipment, userId, rows, page, totalPages }) {
     const start = page * STATUS_PAGE_SIZE;
     const pageRows = rows.slice(start, start + STATUS_PAGE_SIZE);
 
-    const text = `<@${userId}> "${shipment}" -- ${rows.length} SKU(s) need attention (page ${page + 1}/${totalPages})`;
+    const text = (
+        `<@${userId}> "${shipment}" -- ${rows.length} SKU(s) need ` +
+        `attention (page ${page + 1}/${totalPages})`
+    );
 
     const blocks = [
         { type: 'section', text: { type: 'mrkdwn', text: `${text}:` } },
         { type: 'divider' },
         ...pageRows.map(buildStatusRowBlock),
         { type: 'divider' },
-        { type: 'context', elements: [{ type: 'mrkdwn', text: `Page ${page + 1} of ${totalPages}` }] },
+        {
+            type: 'context',
+            elements: [
+                { type: 'mrkdwn', text: `Page ${page + 1} of ${totalPages}` },
+            ],
+        },
     ];
 
     if (totalPages > 1) {
         const elements = [];
         if (page > 0) {
-            elements.push({ type: 'button', text: { type: 'plain_text', text: '◀ Previous' }, action_id: 'status_page_nav', value: String(page - 1) });
+            elements.push({
+                type: 'button',
+                text: { type: 'plain_text', text: '◀ Previous' },
+                action_id: 'status_page_nav',
+                value: String(page - 1),
+            });
         }
         if (page < totalPages - 1) {
-            elements.push({ type: 'button', text: { type: 'plain_text', text: 'Next ▶' }, action_id: 'status_page_nav', value: String(page + 1) });
+            elements.push({
+                type: 'button',
+                text: { type: 'plain_text', text: 'Next ▶' },
+                action_id: 'status_page_nav',
+                value: String(page + 1),
+            });
         }
         blocks.push({ type: 'actions', elements });
     }
@@ -80,67 +114,90 @@ function buildStatusPageBlocks({ shipment, userId, rows, page, totalPages }) {
     return { text, blocks };
 }
 
-/* Reports remaining-label and not-checked-in counts across every known
-    shipment table (paced one Airtable request at a time -- see
-    fetchRemainingLabelsForAllShipments for the rate-limit reasoning). Only
-    shipments that still need labels, have a not-checked-in SKU, or failed
-    to read are listed individually; shipments with neither are just
-    counted as fully printed, since spelling out all ~25+ of them every
-    time would bury the ones that actually need attention. */
+// Reports remaining/not-checked-in counts across every shipment table;
+// only shipments needing attention (or that failed to read) are listed
+// individually, the rest just counted as fully printed.
 async function handleQueryAllShipmentsStatus(say, userId) {
     let results;
     try {
         results = await fetchRemainingLabelsForAllShipments();
     } catch (error) {
         console.error('Failed to look up shipment tables:', error.message);
-        await say(`<@${userId}> Sorry, I couldn't look up shipment tables: ${error.message}`);
+        await say(
+            `<@${userId}> Sorry, I couldn't look up shipment ` +
+            `tables: ${error.message}`
+        );
         return;
     }
 
     const withRemaining = results.filter((r) => !r.error && r.items.length > 0);
-    /* Not mutually exclusive with withRemaining above -- a shipment can
-        have some rows still needing labels AND some individual rows not
-        checked in at the same time, and both facts are worth surfacing, so
-        a shipment can legitimately appear in both lists below. null
-        (schema-drift table, or the check itself failed) is unknown, not a
-        confirmed zero, so it's left out of this bucket and counted as
-        fully printed below instead. */
-    const withNotCheckedIn = results.filter((r) => !r.error && r.notCheckedInCount > 0);
-    const fullyPrinted = results.filter((r) => !r.error && r.items.length === 0 && !r.notCheckedInCount);
+    // Not mutually exclusive with withRemaining -- a shipment can need
+    // both at once, and can legitimately appear in both lists below.
+    const withNotCheckedIn = results.filter((r) => {
+        return !r.error && r.notCheckedInCount > 0;
+    });
+    const fullyPrinted = results.filter((r) => {
+        return !r.error && r.items.length === 0 && !r.notCheckedInCount;
+    });
     const failed = results.filter((r) => r.error);
 
-    if (withRemaining.length === 0 && withNotCheckedIn.length === 0 && failed.length === 0) {
-        await say(`<@${userId}> Checked ${results.length} shipment(s) -- all fully printed, nothing remaining anywhere.`);
+    const nothingToReport = withRemaining.length === 0 &&
+        withNotCheckedIn.length === 0 &&
+        failed.length === 0;
+    if (nothingToReport) {
+        await say(
+            `<@${userId}> Checked ${results.length} shipment(s) -- all ` +
+            `fully printed, nothing remaining anywhere.`
+        );
         return;
     }
 
     const lines = [
-        ...withRemaining.map((r) => `• "${r.shipment}" -- ${r.items.length} SKU(s) remaining`),
-        ...withNotCheckedIn.map((r) => `• "${r.shipment}" -- ${r.notCheckedInCount} SKU(s) not checked in`),
+        ...withRemaining.map((r) => {
+            return `• "${r.shipment}" -- ${r.items.length} SKU(s) remaining`;
+        }),
+        ...withNotCheckedIn.map((r) => {
+            return (
+                `• "${r.shipment}" -- ${r.notCheckedInCount} SKU(s) ` +
+                `not checked in`
+            );
+        }),
         ...failed.map((r) => `• "${r.shipment}" -- couldn't read (${r.error})`),
     ];
 
-    const summary = `Checked ${results.length} shipment(s): ${withRemaining.length} with remaining labels, ${withNotCheckedIn.length} with SKUs not checked in, ${fullyPrinted.length} fully printed` +
-        (failed.length ? `, ${failed.length} failed to read` : '') + '.';
+    const summary = (
+        `Checked ${results.length} shipment(s): ${withRemaining.length} ` +
+        `with remaining labels, ${withNotCheckedIn.length} with SKUs ` +
+        `not checked in, ${fullyPrinted.length} fully printed` +
+        (failed.length ? `, ${failed.length} failed to read` : '') + '.'
+    );
 
     await say(`<@${userId}> ${summary}\n${lines.join('\n')}`);
 }
 
-/* Looks up a shipment by name (fuzzy-matched against Airtable table names,
-    e.g. "august 21" -> "August 21 Shipment") and reports its remaining
-    unprinted labels. Read-only -- no print job is triggered -- so unlike the
-    print handlers this isn't gated by isAuthorized. */
+/**
+ * Looks up a shipment by name and reports its remaining-to-print and
+ * not-checked-in SKUs as a paginated Block Kit message (or a plain-text
+ * reply when there's nothing to page through). Read-only, so unlike the
+ * print handlers this isn't gated by isAuthorized.
+ *
+ * @param {{shipmentRef: string}} args - The shipment reference from
+ *   intent parsing.
+ * @param {Function} say - Slack reply function ({@link
+ *   https://api.slack.com/methods/chat.postMessage|chat.postMessage}
+ *   wrapper from Bolt).
+ * @param {string} userId - Slack user ID who asked.
+ * @returns {Promise<void>}
+ */
 async function handleQueryShipmentStatus({ shipmentRef }, say, userId) {
     if (isAllShipmentsQuery(shipmentRef || '')) {
         await handleQueryAllShipmentsStatus(say, userId);
         return;
     }
 
-    /* Shares resolveShipmentAndFetchRemaining with the print handlers so this
-        command's error handling (ambiguous name, lookup failure, no name
-        given) stays identical to theirs instead of duplicating it. */
     const result = await resolveShipmentAndFetchRemaining({ shipmentRef });
-    if (await sayShipmentResolutionError(result, say, userId, 'check status of the august 21 shipment')) {
+    const exampleCommand = 'check status of the august 21 shipment';
+    if (await sayShipmentResolutionError(result, say, userId, exampleCommand)) {
         return;
     }
     await sayDisambiguationNoteIfAny(result, say, userId);
@@ -153,24 +210,31 @@ async function handleQueryShipmentStatus({ shipmentRef }, say, userId) {
         imageUrl: null,
     }));
 
-    /* A separate bucket from the remaining-labels one above -- checking in
-        and printing are different steps, so a SKU can be behind on either
-        independently. Queried separately (rather than folded into
-        resolveShipmentAndFetchRemaining) so the print handlers that also
-        share that function don't pay for a query they never display. */
+    // Queried separately rather than folded into
+    // resolveShipmentAndFetchRemaining, so the print handlers that share
+    // that function don't pay for a query they never display.
     let notCheckedIn;
     try {
         notCheckedIn = await fetchNotCheckedInForTable(result.shipment);
     } catch (error) {
         console.error('Failed to fetch not-checked-in SKUs:', error.message);
-        notCheckedIn = { items: null, unsupported: false, error: describeAirtableError(error) };
+        notCheckedIn = {
+            items: null,
+            unsupported: false,
+            error: describeAirtableError(error),
+        };
     }
 
     const preambleNotes = [];
     if (notCheckedIn.unsupported) {
-        preambleNotes.push(`Can't check not-checked-in status for "${result.shipment}" -- this table doesn't track "Checked In".`);
+        preambleNotes.push(
+            `Can't check not-checked-in status for "${result.shipment}" ` +
+            `-- this table doesn't track "Checked In".`
+        );
     } else if (notCheckedIn.error) {
-        preambleNotes.push(`Couldn't check not-checked-in SKUs: ${notCheckedIn.error}`);
+        preambleNotes.push(
+            `Couldn't check not-checked-in SKUs: ${notCheckedIn.error}`
+        );
     }
 
     const notCheckedInRows = (notCheckedIn.items || []).map((item) => ({
@@ -182,24 +246,22 @@ async function handleQueryShipmentStatus({ shipmentRef }, say, userId) {
     }));
 
     if (remainingRows.length === 0 && notCheckedInRows.length === 0) {
-        preambleNotes.unshift(`"${result.shipment}" has no remaining labels to print -- everything's already printed.`);
+        preambleNotes.unshift(
+            `"${result.shipment}" has no remaining labels to print -- ` +
+            `everything's already printed.`
+        );
         await say(`<@${userId}> ${preambleNotes.join('\n\n')}`);
         return;
     }
 
-    /* Reached only when notCheckedInRows.length > 0 (the both-empty case
-        above already returned) -- "everything's already printed" would be
-        actively wrong here: these SKUs haven't been checked in at all, so
-        there's nothing *ready* to print, not nothing *left* to print --
-        e.g. a brand-new shipment nobody's started receiving yet looks
-        identical to a fully-printed one under the remaining-labels filter
-        alone, and conflating the two is misleading. This framing has
-        nowhere to live inside the paginated row view below (it's not a
-        row), so it's said here as its own preamble message instead, same
-        spot sayDisambiguationNoteIfAny's note already uses -- nothing the
-        plain-text version used to say is lost, just said accurately. */
+    // Distinct wording from the fully-printed case above: these SKUs
+    // were never checked in, so nothing's ready to print, not nothing
+    // left to print.
     if (remainingRows.length === 0) {
-        preambleNotes.unshift(`"${result.shipment}" has no remaining labels to print yet -- nothing's been checked in.`);
+        preambleNotes.unshift(
+            `"${result.shipment}" has no remaining labels to print yet ` +
+            `-- nothing's been checked in.`
+        );
     }
 
     if (preambleNotes.length > 0) {
@@ -208,31 +270,51 @@ async function handleQueryShipmentStatus({ shipmentRef }, say, userId) {
 
     let rows = [...remainingRows, ...notCheckedInRows];
 
-    /* Enrichment, not a requirement -- fetchProductNamesForTable throws
-        UNKNOWN_FIELD_NAME on a table missing the product-name lookup field
-        entirely (same schema drift as the Checked In field elsewhere), and
-        a table with the field can still have individual rows with no
-        catalog link. Either way, rows still render with just their SKU and
-        status (see formatStatusRowText's fallback) -- the status command's
-        core job must never fail just because the name/image lookup did. */
+    // Enrichment, not a requirement -- a failure here (e.g. missing
+    // product-name field) still lets rows render with just SKU/status.
     try {
         const namesPayload = await fetchProductNamesForTable(result.shipment);
-        const bySku = new Map(namesPayload.items.map((item) => [item.sku.toUpperCase(), item]));
+        const bySku = new Map(
+            namesPayload.items.map((item) => [item.sku.toUpperCase(), item])
+        );
         rows = rows.map((row) => {
             const match = bySku.get(row.sku.toUpperCase());
-            return match ? { ...row, productName: match.productName, imageUrl: match.imageUrl } : row;
+            return match
+                ? {
+                    ...row,
+                    productName: match.productName,
+                    imageUrl: match.imageUrl,
+                }
+                : row;
         });
     } catch (error) {
-        console.error('Failed to fetch product names/images for status enrichment:', error.message);
+        console.error(
+            'Failed to fetch product names/images for status enrichment:',
+            error.message
+        );
     }
 
     const totalPages = Math.ceil(rows.length / STATUS_PAGE_SIZE);
-    const { text, blocks } = buildStatusPageBlocks({ shipment: result.shipment, userId, rows, page: 0, totalPages });
+    const { text, blocks } = buildStatusPageBlocks({
+        shipment: result.shipment,
+        userId,
+        rows,
+        page: 0,
+        totalPages,
+    });
     const posted = await say({ text, blocks });
 
     if (totalPages > 1) {
-        setStatusPageCache(posted.channel, posted.ts, { shipment: result.shipment, userId, rows });
+        setStatusPageCache(posted.channel, posted.ts, {
+            shipment: result.shipment,
+            userId,
+            rows,
+        });
     }
 }
 
-module.exports = { handleQueryShipmentStatus, buildStatusPageBlocks, STATUS_PAGE_SIZE };
+module.exports = {
+    handleQueryShipmentStatus,
+    buildStatusPageBlocks,
+    STATUS_PAGE_SIZE,
+};
