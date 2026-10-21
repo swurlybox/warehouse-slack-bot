@@ -11,6 +11,7 @@ const {
 } = require('../airtable/fetch_remaining_labels');
 const {
     findShipmentTable,
+    findMostRecentShipmentTable,
     isAllShipmentsQuery,
     SKU_TOKEN_PATTERN,
 } = require('../airtable/shipment_lookup');
@@ -31,6 +32,22 @@ async function resolveShipmentTableName(shipmentRef) {
         };
     }
     return result;
+}
+
+// Unlike resolveShipmentTableName, this one does default -- but only for
+// product-name search, and dynamically (the most recently created
+// table), never a fixed name, so a renamed/retired table can't go stale.
+async function resolveMostRecentShipmentTable() {
+    const result = await findMostRecentShipmentTable();
+
+    if (result.status !== 'ok') {
+        return result;
+    }
+    return {
+        status: 'ok',
+        tableName: result.table.name,
+        note: `No shipment named -- using the most recent: "${result.table.name}".`,
+    };
 }
 
 /**
@@ -456,10 +473,12 @@ const MAX_PRODUCT_CANDIDATES_SHOWN = 10;
 /**
  * Resolves the shipment, fetches its name-matchable rows, and ranks them
  * against a free-text product query. Shared by handlePrintByProductName
- * and handleTestPrintByProductName.
+ * and handleTestPrintByProductName. Defaults to the most recently
+ * created shipment table when `shipmentRef` is empty, unlike the other
+ * print commands.
  *
  * @param {{productQuery: string, shipmentRef: string}} args - The product
- *   description and shipment reference.
+ *   description and shipment reference (optional -- see above).
  * @returns {Promise<object>} `{status: 'ok', shipment, candidates, note?}`
  *   on success, or `{status: 'parse_error'|'no_names_available'|
  *   'no_matches'|'error'|'ambiguous'|'not_found', ...}` on failure.
@@ -469,11 +488,13 @@ async function resolveProductNameMatches({ productQuery, shipmentRef }) {
         return { status: 'parse_error' };
     }
 
-    const resolved = await resolveShipmentTableName(shipmentRef)
-        .catch((error) => {
-            console.error('Failed to look up shipment tables:', error.message);
-            return { status: 'error', message: error.message };
-        });
+    const resolved = await (shipmentRef
+        ? resolveShipmentTableName(shipmentRef)
+        : resolveMostRecentShipmentTable()
+    ).catch((error) => {
+        console.error('Failed to look up shipment tables:', error.message);
+        return { status: 'error', message: error.message };
+    });
 
     if (resolved.status !== 'ok') {
         return resolved;

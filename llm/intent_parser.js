@@ -88,9 +88,11 @@ const SYSTEM_PROMPT = (
     `- print_by_product_name / test_print_by_product_name: print or ` +
     `dry-run a product the message describes by name/words rather ` +
     `than by exact SKU code (e.g. "print the kikkoman soy sauce from ` +
-    `the sept 10 shipment"). Still requires a shipment reference, ` +
-    `same as the other print intents. Extract only \`product_query\` ` +
-    `and \`shipment_ref\` here -- never guess a SKU.\n` +
+    `the sept 10 shipment"). Unlike the other print intents, a ` +
+    `shipment reference is optional here -- if the message names ` +
+    `none, omit \`shipment_ref\` and the system defaults to the most ` +
+    `recent shipment. Extract only \`product_query\` and (if present) ` +
+    `\`shipment_ref\` here -- never guess a SKU.\n` +
     `- query_shipment_status: read-only status check, for one ` +
     `shipment or all of them.\n` +
     `- help: asking what the bot can do.\n\n` +

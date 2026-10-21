@@ -204,6 +204,25 @@ async function findShipmentTable(text) {
 }
 
 /**
+ * Finds the most recently created shipment table, for commands that
+ * default to "the latest shipment" when the user names none (currently
+ * just print-by-product-name -- see its own no-default note for why
+ * other commands don't do this).
+ *
+ * @returns {Promise<{status: 'ok', table: {id: string, name: string}} |
+ *   {status: 'not_found', queryTokens: string[]}>}
+ */
+async function findMostRecentShipmentTable() {
+    const tables = await listShipmentTables();
+    const winner = tables.length > 0 ? await pickNewestTable(tables) : null;
+
+    if (!winner) {
+        return { status: 'not_found', queryTokens: [] };
+    }
+    return { status: 'ok', table: winner };
+}
+
+/**
  * Fetches remaining-label and not-checked-in counts for every known
  * shipment table, one at a time. A single table failing doesn't abort
  * the rest. The not-checked-in count catches shipments that have some
@@ -264,6 +283,7 @@ async function fetchRemainingLabelsForAllShipments() {
 module.exports = {
     listShipmentTables,
     findShipmentTable,
+    findMostRecentShipmentTable,
     isAllShipmentsQuery,
     fetchRemainingLabelsForAllShipments,
     SKU_TOKEN_PATTERN,
