@@ -243,7 +243,12 @@ async function fetchProductNamesForTable(tableName) {
         })
         .eachPage((records, fetchNextPage) => {
             for (const record of records) {
-                const sku = record.get('SKU');
+                // Trimmed because a stray leading/trailing newline in
+                // this singleLineText field (seen on real records) would
+                // otherwise survive the LLM round-trip -- the model
+                // echoes the SKU back without it, breaking the
+                // case-insensitive join back to this item.
+                const sku = record.get('SKU')?.trim();
                 const nameLookup = record.get(PRODUCT_NAME_FIELD);
                 const hasName = Array.isArray(nameLookup) &&
                     nameLookup.length > 0;
