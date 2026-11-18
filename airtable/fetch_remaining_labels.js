@@ -74,7 +74,10 @@ async function fetchRemainingLabelsForTable(tableName) {
         })
         .eachPage((records, fetchNextPage) => {
             for (const record of records) {
-                const sku = record.get('SKU');
+                // Trimmed: a stray leading/trailing newline on the
+                // stored SKU (seen on real records) would otherwise
+                // reach callers that compare it against a clean value.
+                const sku = record.get('SKU')?.trim();
                 const quantity = record.get('Labels');
 
                 if (!sku || !Number.isFinite(quantity)) {
@@ -126,7 +129,7 @@ async function fetchNotCheckedInForTable(tableName) {
             })
             .eachPage((records, fetchNextPage) => {
                 for (const record of records) {
-                    const sku = record.get('SKU');
+                    const sku = record.get('SKU')?.trim();
                     if (!sku) {
                         continue;
                     }
@@ -162,8 +165,11 @@ async function fetchNotCheckedInForTable(tableName) {
  */
 async function fetchLabelsBySkuForTable(tableName, skus) {
     const uniqueSkus = [...new Set(skus)];
+    // TRIM() because a stray leading/trailing newline on the stored SKU
+    // (seen on real records) would otherwise never equal the clean SKU
+    // callers pass in -- LOWER() alone doesn't strip whitespace.
     const formula = `OR(${uniqueSkus
-        .map((sku) => `LOWER({SKU}) = LOWER("${sku}")`)
+        .map((sku) => `LOWER(TRIM({SKU})) = LOWER("${sku}")`)
         .join(', ')})`;
     const found = new Map();
 
@@ -174,7 +180,7 @@ async function fetchLabelsBySkuForTable(tableName, skus) {
         })
         .eachPage((records, fetchNextPage) => {
             for (const record of records) {
-                const sku = record.get('SKU');
+                const sku = record.get('SKU')?.trim();
                 const quantity = record.get('Labels');
 
                 if (!sku || !Number.isFinite(quantity)) {
